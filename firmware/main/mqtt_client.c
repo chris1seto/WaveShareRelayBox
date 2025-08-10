@@ -1,4 +1,5 @@
 #include "app_mqtt.h"
+#include "mqtt_config.h"
 #include "esp_log.h"
 #include "cJSON.h"
 #include "relay_control.h"
@@ -6,6 +7,7 @@
 static const char *TAG = "MQTT_CLIENT";
 
 esp_mqtt_client_handle_t mqtt_client = NULL;
+static bool mqtt_enabled = false;
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
@@ -85,10 +87,37 @@ esp_err_t mqtt_client_init(void)
 {
     ESP_LOGI(TAG, "Initializing MQTT client");
     
+    // Load MQTT configuration from NVS
+    mqtt_config_t config;
+    esp_err_t ret = mqtt_config_load(&config);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to load MQTT config, using defaults");
+        mqtt_config_get_default(&config);
+    }
+    
+    // Set global enabled flag
+    mqtt_enabled = config.enabled;
+    
+    // Only initialize if MQTT is enabled
+    if (!config.enabled) {
+        ESP_LOGI(TAG, "MQTT is disabled, skipping initialization");
+        return ESP_OK;
+    }
+    
+    // Build broker URI
+    char broker_uri[128];
+    if (strlen(config.broker) > 0) {
+        snprintf(broker_uri, sizeof(broker_uri), "mqtt://%s:%d", config.broker, config.port);
+    } else {
+        ESP_LOGW(TAG, "No broker configured, skipping MQTT initialization");
+        mqtt_enabled = false;
+        return ESP_OK;
+    }
+    
     esp_mqtt_client_config_t mqtt_cfg = {
-        .broker.address.uri = MQTT_BROKER_URL,
-        .credentials.username = MQTT_USERNAME,
-        .credentials.authentication.password = MQTT_PASSWORD,
+        .broker.address.uri = broker_uri,
+        .credentials.username = config.username,
+        .credentials.authentication.password = config.password,
         .session.keepalive = 60,
         .session.disable_clean_session = false,
         .buffer.size = 1024,
@@ -109,12 +138,17 @@ esp_err_t mqtt_client_init(void)
         return err;
     }
     
-    ESP_LOGI(TAG, "MQTT client initialized successfully");
+    ESP_LOGI(TAG, "MQTT client initialized successfully with broker: %s", broker_uri);
     return ESP_OK;
 }
 
 esp_err_t mqtt_client_start(void)
 {
+    if (!mqtt_enabled) {
+        ESP_LOGI(TAG, "MQTT is disabled, not starting client");
+        return ESP_OK;
+    }
+    
     if (mqtt_client == NULL) {
         ESP_LOGE(TAG, "MQTT client not initialized");
         return ESP_FAIL;
@@ -148,6 +182,11 @@ esp_err_t mqtt_client_stop(void)
 
 esp_err_t mqtt_publish_status(const char* status_json)
 {
+    if (!mqtt_enabled) {
+        ESP_LOGI(TAG, "MQTT is disabled, not publishing status");
+        return ESP_OK;
+    }
+    
     if (mqtt_client == NULL) {
         ESP_LOGE(TAG, "MQTT client not initialized");
         return ESP_FAIL;
@@ -168,6 +207,11 @@ esp_err_t mqtt_publish_status(const char* status_json)
 
 esp_err_t mqtt_publish_config(const char* config_json)
 {
+    if (!mqtt_enabled) {
+        ESP_LOGI(TAG, "MQTT is disabled, not publishing config");
+        return ESP_OK;
+    }
+    
     if (mqtt_client == NULL) {
         ESP_LOGE(TAG, "MQTT client not initialized");
         return ESP_FAIL;
@@ -184,4 +228,9 @@ esp_err_t mqtt_publish_config(const char* config_json)
     
     ESP_LOGI(TAG, "Published config to %s: %s", topic_config, config_json);
     return ESP_OK;
+}
+
+bool mqtt_is_enabled(void)
+{
+    return mqtt_enabled;
 }

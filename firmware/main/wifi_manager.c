@@ -14,6 +14,7 @@ static esp_netif_t *sta_netif = NULL;
 static esp_netif_t *ap_netif = NULL;
 static bool wifi_connected = false;
 static char current_ip[16] = {0};
+static char current_ssid[33] = {0};
 static int sta_retry_count = 0;
 
 // NVS keys for WiFi credentials
@@ -98,10 +99,12 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
         wifi_connected = true;
         snprintf(current_ip, sizeof(current_ip), IPSTR, IP2STR(&event->ip_info.ip));
+        // Note: current_ssid is set in wifi_manager_start_sta when connection is initiated
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGI(TAG, "WiFi disconnected");
         wifi_connected = false;
         memset(current_ip, 0, sizeof(current_ip));
+        memset(current_ssid, 0, sizeof(current_ssid));
         if (sta_retry_count < WIFI_STA_MAX_RETRIES) {
             sta_retry_count++;
             ESP_LOGI(TAG, "Retrying STA connect (%d/%d)", sta_retry_count, WIFI_STA_MAX_RETRIES);
@@ -169,6 +172,10 @@ esp_err_t wifi_manager_start_sta(const char* ssid, const char* password)
     strncpy((char*)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid)-1);
     strncpy((char*)wifi_config.sta.password, password, sizeof(wifi_config.sta.password)-1);
     
+    // Store current SSID for status reporting
+    strncpy(current_ssid, ssid, sizeof(current_ssid)-1);
+    current_ssid[sizeof(current_ssid)-1] = '\0';
+    
     // Stop WiFi if already running to safely switch modes
     esp_err_t stop_err = esp_wifi_stop();
     if (stop_err != ESP_OK && stop_err != ESP_ERR_WIFI_NOT_INIT && stop_err != ESP_ERR_WIFI_NOT_STARTED) {
@@ -224,6 +231,7 @@ esp_err_t wifi_manager_stop(void)
     ESP_ERROR_CHECK(esp_wifi_stop());
     wifi_connected = false;
     memset(current_ip, 0, sizeof(current_ip));
+    memset(current_ssid, 0, sizeof(current_ssid));
     return ESP_OK;
 }
 
@@ -244,6 +252,21 @@ esp_err_t wifi_manager_get_ip(char* ip_str, size_t len)
     
     strncpy(ip_str, current_ip, len - 1);
     ip_str[len - 1] = '\0';
+    return ESP_OK;
+}
+
+esp_err_t wifi_manager_get_current_ssid(char* ssid_str, size_t len)
+{
+    if (ssid_str == NULL || len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    if (!wifi_connected) {
+        return ESP_FAIL;
+    }
+    
+    strncpy(ssid_str, current_ssid, len - 1);
+    ssid_str[len - 1] = '\0';
     return ESP_OK;
 }
 

@@ -5,12 +5,8 @@
 #include "esp_err.h"
 #include <mqtt_client.h>
 
-// MQTT Configuration
-#define MQTT_BROKER_URL "mqtt://192.168.1.138"
-#define MQTT_BROKER_PORT 1883
+// MQTT Configuration - now loaded from NVS
 #define MQTT_CLIENT_ID "waveshare-relay-esp32s3"
-#define MQTT_USERNAME ""
-#define MQTT_PASSWORD ""
 
 // MQTT Topics
 #define MQTT_TOPIC_ROOT "waveshare/relay"
@@ -24,6 +20,7 @@ esp_err_t mqtt_client_start(void);
 esp_err_t mqtt_client_stop(void);
 esp_err_t mqtt_publish_status(const char* status_json);
 esp_err_t mqtt_publish_config(const char* config_json);
+bool mqtt_is_enabled(void);
 
 // External variables
 extern esp_mqtt_client_handle_t mqtt_client;

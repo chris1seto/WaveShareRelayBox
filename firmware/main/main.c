@@ -18,6 +18,8 @@
 #include "wifi_manager.h"
 #include "relay_control.h"
 #include "web_server.h"
+#include "mqtt_config.h"
+#include "app_mqtt.h"
 #include "ota_update.h"
 
 static const char *TAG = "MAIN";
@@ -135,13 +137,16 @@ void app_main(void)
     // Initialize relay control
     relay_control_init();
 
+    // Initialize MQTT configuration
+    mqtt_config_init();
+
     // Initialize WiFi and bootstrap connection flow
     wifi_manager_init();
     wifi_manager_bootstrap();
 
-    // Initialize MQTT client
+    // Initialize MQTT client (only if enabled in config)
     mqtt_client_init();
-    mqtt_client_start(); // Start the MQTT client
+    // Note: mqtt_client_start() is called automatically if MQTT is enabled
 
     // Initialize web server
     web_server_init();
@@ -160,11 +165,14 @@ void app_main(void)
             ESP_LOGW(TAG, "Low memory warning: %d bytes free", esp_get_free_heap_size());
         }
         
-        // Publish relay status periodically if MQTT is connected
+        // Publish relay status periodically if MQTT is enabled and connected
         static int status_counter = 0;
         status_counter++;
         if (status_counter >= 30) { // Every 30 seconds
-            relay_publish_status();
+            // Check if MQTT is enabled before attempting to publish
+            if (mqtt_is_enabled()) {
+                relay_publish_status();
+            }
             status_counter = 0;
         }
     }

@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "wifi_manager.c"
         "mqtt_client.c"
+        "mqtt_config.c"
         "relay_control.c"
         "web_server.c"
         "ota_update.c"

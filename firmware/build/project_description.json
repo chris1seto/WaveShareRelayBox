@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "waveshare-relay-firmware",
-    "project_version":    "a20d09c-dirty",
+    "project_version":    "7765772-dirty",
     "project_path":       "/home/chris/WaveShareRelayBox/firmware",
     "idf_path":           "/home/chris/esp/esp-idf",
     "build_dir":          "/home/chris/WaveShareRelayBox/firmware/build",
@@ -1240,7 +1240,7 @@
             "managed_reqs": [],
             "managed_priv_reqs": [ "joltwallet__littlefs" ],
             "file": "/home/chris/WaveShareRelayBox/firmware/build/esp-idf/main/libmain.a",
-            "sources": [ "/home/chris/WaveShareRelayBox/firmware/main/main.c", "/home/chris/WaveShareRelayBox/firmware/main/wifi_manager.c", "/home/chris/WaveShareRelayBox/firmware/main/mqtt_client.c", "/home/chris/WaveShareRelayBox/firmware/main/relay_control.c", "/home/chris/WaveShareRelayBox/firmware/main/web_server.c", "/home/chris/WaveShareRelayBox/firmware/main/ota_update.c" ],
+            "sources": [ "/home/chris/WaveShareRelayBox/firmware/main/main.c", "/home/chris/WaveShareRelayBox/firmware/main/wifi_manager.c", "/home/chris/WaveShareRelayBox/firmware/main/mqtt_client.c", "/home/chris/WaveShareRelayBox/firmware/main/mqtt_config.c", "/home/chris/WaveShareRelayBox/firmware/main/relay_control.c", "/home/chris/WaveShareRelayBox/firmware/main/web_server.c", "/home/chris/WaveShareRelayBox/firmware/main/ota_update.c" ],
             "include_dirs": [ "." ]
         },
         "mbedtls": {

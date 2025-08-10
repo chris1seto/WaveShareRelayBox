@@ -58,6 +58,14 @@
     .tab-content{display:none}
     .tab-content.active{display:block}
     
+    /* Combobox Dropdown */
+    .combobox-container{position:relative}
+    .combobox-dropdown{position:absolute;top:100%;left:0;right:0;background:var(--card);border:1px solid #2b2f5a;border-radius:8px;max-height:200px;overflow-y:auto;z-index:1000;box-shadow:0 4px 20px rgba(0,0,0,0.3)}
+    .combobox-item{padding:10px 12px;cursor:pointer;border-bottom:1px solid #1a1f4a;transition:background 0.2s ease}
+    .combobox-item:hover{background:#1a1f4a}
+    .combobox-item:last-child{border-bottom:none}
+    .combobox-item.selected{background:var(--accent);color:#fff}
+    
     .footer{margin-top:16px;font-size:12px;color:#aab2ff} code{background:#0d1030;padding:2px 6px;border-radius:6px}
   </style>
 </head>
@@ -90,18 +98,16 @@
         <p class="muted">Configure WiFi connection settings. Credentials are saved in NVS.</p>
         
         <div class="field" style="margin-bottom:16px">
-          <label>SSID Selection</label>
+          <label>WiFi SSID</label>
           <div class="row" style="gap:8px">
-            <select id="ssidSelect" style="flex:1" onchange="updateSsidInput()">
-              <option value="">Select from discovered networks...</option>
-            </select>
-            <button class="btn secondary" onclick="scanWifi()" style="white-space:nowrap">🔍 Scan</button>
+            <div class="combobox-container" style="flex:1;position:relative">
+              <input id="ssidSelect" type="text" placeholder="Type SSID or select from discovered networks..." 
+                     autocomplete="off" oninput="filterNetworks()" onfocus="showDropdown()" onblur="hideDropdown()">
+              <div id="ssidDropdown" class="combobox-dropdown" style="display:none"></div>
+            </div>
+            <button id="scanBtn" class="btn secondary" onclick="scanWifi(true)" style="white-space:nowrap">🔍 Scan</button>
           </div>
-        </div>
-        
-        <div class="field" style="margin-bottom:16px">
-          <label>SSID (or enter manually)</label>
-          <input id="ssid" type="text" placeholder="WiFi SSID" autocomplete="off">
+          <input id="ssid" type="hidden" value="">
         </div>
         
         <div class="field" style="margin-bottom:16px">
@@ -114,7 +120,6 @@
         
         <div class="row" style="margin-top:16px">
           <button class="btn" onclick="saveWifi()">Save & Connect</button>
-          <button class="btn secondary" onclick="refreshStatus()">Refresh Status</button>
           <span id="wifiMsg" class="muted"></span>
         </div>
       </div>
@@ -136,13 +141,11 @@
         </div>
         
         <div class="field" style="margin-bottom:16px">
-          <label>Broker Address</label>
-          <input id="mqttBroker" type="text" placeholder="mqtt.example.com" autocomplete="off">
-        </div>
-        
-        <div class="field" style="margin-bottom:16px">
-          <label>Port</label>
-          <input id="mqttPort" type="number" placeholder="1883" value="1883" min="1" max="65535">
+          <label>Broker Address & Port</label>
+          <div class="row" style="gap:8px">
+            <input id="mqttBroker" type="text" placeholder="mqtt.example.com" autocomplete="off" style="flex:1">
+            <input id="mqttPort" type="text" placeholder="port" value="1883" style="width:80px;text-align:center" onblur="updatePortPlaceholder()">
+          </div>
         </div>
         
         <div class="row" style="margin-top:16px">
@@ -156,6 +159,7 @@
   </div>
   <script>
     let relayStates=[false,false,false,false,false,false];
+    let discoveredNetworks = [];
     
     function el(id){return document.getElementById(id)}
     
@@ -275,8 +279,14 @@
     }
     
     async function saveWifi(){
-      const ssid = el('ssid').value.trim();
+      const ssid = el('ssidSelect').value.trim();
       const password = el('password').value;
+      
+      if(!ssid){
+        el('wifiMsg').textContent = 'Please enter SSID';
+        return;
+      }
+      
       el('wifiMsg').textContent = 'Saving...';
       
       try{
@@ -301,10 +311,20 @@
     async function saveMqtt(){
       const enabled = el('mqttEnabled').checked;
       const broker = el('mqttBroker').value.trim();
-      const port = parseInt(el('mqttPort').value);
+      const portText = el('mqttPort').value.trim();
       
-      if(enabled && (!broker || port < 1 || port > 65535)){
-        el('mqttMsg').textContent = 'Please enter valid broker and port';
+      // Handle port input - if empty or "port", use default 1883
+      let port = 1883;
+      if(portText && portText !== 'port'){
+        port = parseInt(portText);
+        if(isNaN(port) || port < 1 || port > 65535){
+          el('mqttMsg').textContent = 'Please enter valid port (1-65535)';
+          return;
+        }
+      }
+      
+      if(enabled && !broker){
+        el('mqttMsg').textContent = 'Please enter broker address';
         return;
       }
       
@@ -328,42 +348,107 @@
       }
     }
     
-    async function scanWifi(){
-      const scanBtn = event.target;
-      const originalText = scanBtn.textContent;
-      scanBtn.textContent = 'Scanning...';
-      scanBtn.disabled = true;
+    async function scanWifi(showUI = true){
+      const scanBtn = el('scanBtn');
+      let originalText = '';
+      let wasDisabled = false;
+      
+      if(showUI && scanBtn){
+        originalText = scanBtn.textContent;
+        wasDisabled = scanBtn.disabled;
+        scanBtn.textContent = 'Scanning...';
+        scanBtn.disabled = true;
+      }
       
       try{
         const response = await fetch('/wifi/scan');
         const networks = await response.json();
         
-        const select = el('ssidSelect');
-        select.innerHTML = '<option value="">Select from discovered networks...</option>';
-        
-        networks.forEach(network => {
-          const option = document.createElement('option');
-          option.value = network.ssid;
-          option.textContent = `${network.ssid} (${network.rssi} dBm)`;
-          select.appendChild(option);
-        });
+        discoveredNetworks = networks;
+        updateComboboxDropdown();
         
         if(networks.length === 0){
-          select.innerHTML = '<option value="">No networks found</option>';
+          el('ssidDropdown').innerHTML = '<div class="combobox-item">No networks found</div>';
         }
       } catch(e){
         console.error('Failed to scan WiFi:', e);
-        el('ssidSelect').innerHTML = '<option value="">Scan failed</option>';
+        if(showUI){
+          el('ssidDropdown').innerHTML = '<div class="combobox-item">Scan failed</div>';
+        }
       } finally {
-        scanBtn.textContent = originalText;
-        scanBtn.disabled = false;
+        if(showUI && scanBtn){
+          scanBtn.textContent = originalText;
+          scanBtn.disabled = wasDisabled;
+        }
       }
     }
     
-    function updateSsidInput(){
-      const selectedSsid = el('ssidSelect').value;
-      if(selectedSsid){
-        el('ssid').value = selectedSsid;
+    function updateComboboxDropdown(){
+      const dropdown = el('ssidDropdown');
+      dropdown.innerHTML = '';
+      
+      discoveredNetworks.forEach(network => {
+        const item = document.createElement('div');
+        item.className = 'combobox-item';
+        item.textContent = `${network.ssid} (${network.rssi} dBm)`;
+        item.onclick = () => selectNetwork(network.ssid);
+        dropdown.appendChild(item);
+      });
+    }
+    
+    function selectNetwork(ssid){
+      el('ssidSelect').value = ssid;
+      el('ssid').value = ssid;
+      hideDropdown();
+    }
+    
+    function filterNetworks(){
+      const input = el('ssidSelect');
+      const filter = input.value.toLowerCase();
+      const dropdown = el('ssidDropdown');
+      
+      if(!filter){
+        updateComboboxDropdown();
+        return;
+      }
+      
+      dropdown.innerHTML = '';
+      const filtered = discoveredNetworks.filter(network => 
+        network.ssid.toLowerCase().includes(filter)
+      );
+      
+      filtered.forEach(network => {
+        const item = document.createElement('div');
+        item.className = 'combobox-item';
+        item.textContent = `${network.ssid} (${network.rssi} dBm)`;
+        item.onclick = () => selectNetwork(network.ssid);
+        dropdown.appendChild(item);
+      });
+      
+      if(filtered.length === 0){
+        dropdown.innerHTML = '<div class="combobox-item">No matches found</div>';
+      }
+    }
+    
+    function showDropdown(){
+      if(discoveredNetworks.length > 0){
+        updateComboboxDropdown();
+        el('ssidDropdown').style.display = 'block';
+      }
+    }
+    
+    function hideDropdown(){
+      // Small delay to allow clicking on dropdown items
+      setTimeout(() => {
+        el('ssidDropdown').style.display = 'none';
+      }, 150);
+    }
+    
+    function updatePortPlaceholder(){
+      const portInput = el('mqttPort');
+      if(portInput.value.trim() === ''){
+        portInput.value = '';
+        portInput.placeholder = 'port';
       }
     }
     
@@ -380,8 +465,56 @@
       }
     }
     
+    // Load current WiFi SSID and MQTT settings
+    async function loadCurrentWifi(){
+      try{
+        const response = await fetch('/status');
+        const status = await response.json();
+        
+        // Update network status
+        el('netMode').textContent = status.wifi_connected ? 
+          ('STA ' + (status.ip_address || '')) : 'AP mode';
+        
+        // Load current SSID if connected
+        if(status.wifi_connected && status.current_ssid){
+          el('ssidSelect').value = status.current_ssid;
+          el('ssid').value = status.current_ssid;
+        }
+        
+        // Load current MQTT settings if available
+        if(status.mqtt_enabled !== undefined){
+          el('mqttEnabled').checked = status.mqtt_enabled;
+        }
+        if(status.mqtt_broker){
+          el('mqttBroker').value = status.mqtt_broker;
+        }
+        if(status.mqtt_port){
+          el('mqttPort').value = status.mqtt_port;
+        }
+      } catch(e){
+        console.error('Failed to load current settings:', e);
+      }
+    }
+    
+    // Auto-refresh status every 10 seconds
+    function startAutoRefresh(){
+      setInterval(refreshStatus, 10000);
+    }
+    
+    // Auto-scan WiFi every 10 seconds
+    function startAutoWifiScan(){
+      setInterval(() => scanWifi(false), 10000);
+    }
+    
     // Initialize the interface
+    loadCurrentWifi();
     refreshStatus();
+    startAutoRefresh();
+    // Initial WiFi scan
+    scanWifi(false);
+    startAutoWifiScan();
+    // Draw relay switches on initial load
+    draw();
   </script>
 </body>
 </html>
