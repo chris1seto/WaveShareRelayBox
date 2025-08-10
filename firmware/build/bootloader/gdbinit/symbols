@@ -17,4 +17,4 @@ set confirm off
 set confirm on
 
 # Load application symbols
-file /home/chris/waveshare-relay-firmware/build/bootloader/bootloader.elf
+file /home/chris/WaveShareRelayBox/firmware/build/bootloader/bootloader.elf

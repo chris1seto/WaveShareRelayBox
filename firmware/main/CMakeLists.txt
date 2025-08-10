@@ -18,4 +18,5 @@ idf_component_register(
         json
         driver
         esp_timer
+        littlefs
 )

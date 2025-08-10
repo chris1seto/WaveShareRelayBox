@@ -14,6 +14,7 @@ static esp_netif_t *sta_netif = NULL;
 static esp_netif_t *ap_netif = NULL;
 static bool wifi_connected = false;
 static char current_ip[16] = {0};
+static int sta_retry_count = 0;
 
 // NVS keys for WiFi credentials
 #define NVS_NAMESPACE "wifi_config"
@@ -101,6 +102,13 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "WiFi disconnected");
         wifi_connected = false;
         memset(current_ip, 0, sizeof(current_ip));
+        if (sta_retry_count < WIFI_STA_MAX_RETRIES) {
+            sta_retry_count++;
+            ESP_LOGI(TAG, "Retrying STA connect (%d/%d)", sta_retry_count, WIFI_STA_MAX_RETRIES);
+            esp_wifi_connect();
+        } else {
+            ESP_LOGW(TAG, "STA retries exceeded; staying disconnected");
+        }
     }
 }
 
@@ -161,11 +169,20 @@ esp_err_t wifi_manager_start_sta(const char* ssid, const char* password)
     strncpy((char*)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid)-1);
     strncpy((char*)wifi_config.sta.password, password, sizeof(wifi_config.sta.password)-1);
     
+    // Stop WiFi if already running to safely switch modes
+    esp_err_t stop_err = esp_wifi_stop();
+    if (stop_err != ESP_OK && stop_err != ESP_ERR_WIFI_NOT_INIT && stop_err != ESP_ERR_WIFI_NOT_STARTED) {
+        ESP_LOGW(TAG, "esp_wifi_stop returned: %s", esp_err_to_name(stop_err));
+    }
+
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-    
-    ESP_LOGI(TAG, "WiFi STA mode started");
+
+    // Explicitly trigger connection attempt
+    ESP_ERROR_CHECK(esp_wifi_connect());
+
+    ESP_LOGI(TAG, "WiFi STA mode started; connecting to SSID '%s'", ssid);
     return ESP_OK;
 }
 
@@ -243,4 +260,44 @@ esp_err_t wifi_manager_try_connect_saved(void)
     
     ESP_LOGI(TAG, "Found saved WiFi credentials, attempting to connect");
     return wifi_manager_start_sta(ssid, password);
+}
+
+esp_err_t wifi_manager_bootstrap(void)
+{
+    // 1) Try saved credentials
+    if (wifi_manager_try_connect_saved() == ESP_OK) {
+        ESP_LOGI(TAG, "Attempting connect with saved credentials");
+        // Wait for connection or timeout
+        int waited = 0;
+        while (!wifi_manager_is_connected() && waited < WIFI_STA_CONNECT_TIMEOUT_MS) {
+            vTaskDelay(pdMS_TO_TICKS(250));
+            waited += 250;
+        }
+        if (wifi_manager_is_connected()) {
+            ESP_LOGI(TAG, "Connected using saved credentials");
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "Saved credentials failed to connect within timeout");
+    }
+
+    // 2) Try fallback credentials if defined
+    if (strlen(WIFI_FALLBACK_SSID) > 0) {
+        ESP_LOGI(TAG, "Attempting connect with fallback credentials (SSID='%s')", WIFI_FALLBACK_SSID);
+        if (wifi_manager_start_sta(WIFI_FALLBACK_SSID, WIFI_FALLBACK_PASSWORD) == ESP_OK) {
+            int waited = 0;
+            while (!wifi_manager_is_connected() && waited < WIFI_STA_CONNECT_TIMEOUT_MS) {
+                vTaskDelay(pdMS_TO_TICKS(250));
+                waited += 250;
+            }
+            if (wifi_manager_is_connected()) {
+                ESP_LOGI(TAG, "Connected using fallback credentials");
+                return ESP_OK;
+            }
+            ESP_LOGW(TAG, "Fallback credentials failed to connect within timeout");
+        }
+    }
+
+    // 3) Start AP mode
+    ESP_LOGI(TAG, "Starting AP mode as fallback");
+    return wifi_manager_start_ap();
 }

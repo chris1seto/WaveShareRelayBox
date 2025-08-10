@@ -13,8 +13,8 @@ end
 
 # Load bootloader symbols
 set confirm off
-    add-symbol-file /home/chris/waveshare-relay-firmware/build/bootloader/bootloader.elf
+    add-symbol-file /home/chris/WaveShareRelayBox/firmware/build/bootloader/bootloader.elf
 set confirm on
 
 # Load application symbols
-file /home/chris/waveshare-relay-firmware/build/waveshare-relay-firmware.elf
+file /home/chris/WaveShareRelayBox/firmware/build/waveshare-relay-firmware.elf

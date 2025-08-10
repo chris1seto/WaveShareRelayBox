@@ -13,98 +13,33 @@ static const char *TAG = "WEB_SERVER";
 
 static httpd_handle_t server = NULL;
 
-// HTML for the main page
-static const char* html_page =
-    "<!DOCTYPE html>\n"
-    "<html lang=\"en\">\n"
-    "<head>\n"
-    "  <meta charset=\"UTF-8\" />\n"
-    "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n"
-    "  <title>Waveshare ESP32-S3 Relay</title>\n"
-    "  <style>\n"
-    "    :root{--bg:#0f1226;--card:#161a36;--accent:#6c8cff;--ok:#2ecc71;--err:#e74c3c;--muted:#95a5a6;}\n"
-    "    *{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,\n"
-    "    Cantarell,Noto Sans,sans-serif;background:linear-gradient(135deg,#0f1226,#11153a);color:#e9ecff;min-height:100vh}\n"
-    "    .wrap{max-width:980px;margin:0 auto;padding:24px}\n"
-    "    .title{display:flex;align-items:center;gap:12px;margin-bottom:16px}\n"
-    "    .card{background:var(--card);border-radius:14px;padding:20px;margin:12px 0;box-shadow:0 6px 24px rgba(0,0,0,.25)}\n"
-    "    .grid{display:grid;gap:16px}\n"
-    "    @media(min-width:720px){.grid{grid-template-columns:1fr 1fr}}\n"
-    "    .btn{appearance:none;border:0;background:var(--accent);color:#fff;padding:10px 14px;border-radius:10px;\n"
-    "         font-weight:600;cursor:pointer;transition:.2s transform, .2s opacity}\n"
-    "    .btn:hover{transform:translateY(-1px)}\n"
-    "    .btn.secondary{background:#323760}\n"
-    "    .btn.ok{background:var(--ok)} .btn.err{background:var(--err)}\n"
-    "    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}\n"
-    "    .field{display:flex;flex-direction:column;gap:6px;flex:1 1 220px}\n"
-    "    input[type=text],input[type=password]{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #2b2f5a;\n"
-    "      background:#0f1230;color:#e9ecff;outline:none}input:focus{border-color:var(--accent)}\n"
-    "    .badge{display:inline-flex;align-items:center;gap:6px;background:#212655;border:1px solid #2b2f5a;border-radius:999px;\n"
-    "      padding:6px 10px;color:#c9d1ff;font-size:12px} .muted{color:var(--muted)}\n"
-    "    .relay{display:flex;align-items:center;justify-content:space-between;padding:14px;border:1px solid #2b2f5a;\n"
-    "      border-radius:12px;background:#111542}\n"
-    "    .switch{position:relative;width:48px;height:28px;border-radius:999px;background:#444a80;border:1px solid #2b2f5a;\n"
-    "      cursor:pointer;transition:background .2s}\n"
-    "    .knob{position:absolute;top:2px;left:2px;width:23px;height:23px;border-radius:50%;background:#fff;transition:left .2s}\n"
-    "    .on .switch{background:var(--ok)} .on .knob{left:23px}\n"
-    "    .footer{margin-top:16px;font-size:12px;color:#aab2ff} code{background:#0d1030;padding:2px 6px;border-radius:6px}\n"
-    "  </style>\n"
-    "</head>\n"
-    "<body>\n"
-    "  <div class=\"wrap\">\n"
-    "    <div class=\"title\"><span style=\"font-size:22px\">🔌</span><h2 style=\"margin:0\">Waveshare ESP32-S3 Relay</h2><span class=\"badge\" id=\"netBadge\">Network: <span id=\"netMode\">Unknown</span></span></div>\n"
-    "    <div class=\"grid\">\n"
-    "      <div class=\"card\">\n"
-    "        <h3 style=\"margin-top:0\">WiFi Configuration</h3>\n"
-    "        <p class=\"muted\">Set SSID and password to connect in Station mode. Credentials are saved in NVS.</p>\n"
-    "        <div class=\"row\">\n"
-    "          <div class=\"field\"><label>SSID</label><input id=\"ssid\" type=\"text\" placeholder=\"WiFi SSID\" autocomplete=\"off\"></div>\n"
-    "          <div class=\"field\"><label>Password</label><input id=\"password\" type=\"password\" placeholder=\"WiFi Password\"></div>\n"
-    "        </div>\n"
-    "        <div class=\"row\" style=\"margin-top:10px\">\n"
-    "          <button class=\"btn\" onclick=\"saveWifi()\">Save & Connect</button>\n"
-    "          <button class=\"btn secondary\" onclick=\"refreshStatus()\">Refresh Status</button>\n"
-    "          <span id=\"wifiMsg\" class=\"muted\"></span>\n"
-    "        </div>\n"
-    "      </div>\n"
-    "      <div class=\"card\">\n"
-    "        <h3 style=\"margin-top:0\">Relay Control</h3>\n"
-    "        <div id=\"relays\"></div>\n"
-    "        <div class=\"row\" style=\"margin-top:10px\">\n"
-    "          <button class=\"btn\" onclick=\"setAll(true)\">All ON</button>\n"
-    "          <button class=\"btn err\" onclick=\"setAll(false)\">All OFF</button>\n"
-    "        </div>\n"
-    "      </div>\n"
-    "    </div>\n"
-    "    <div class=\"footer\">MQTT topics: <code>waveshare/relay/status</code>, <code>waveshare/relay/set</code></div>\n"
-    "  </div>\n"
-    "  <script>\n"
-    "    let relayStates=[false,false,false,false,false,false];\n"
-    "    function el(id){return document.getElementById(id)}\n"
-    "    function relayRow(i){var on=relayStates[i] ? ' on' : '';return '\n"
-    "      <div class=\"relay' + on + '\">' +\n"
-    "        '<div style=\"font-weight:600\">Relay ' + (i+1) + '</div>' +\n"
-    "        '<div class=\"switch\" onclick=\"toggle(' + i + ')\"><div class=\"knob\"></div></div>' +\n"
-    "      '</div>'}\n"
-    "    function draw(){const c=el('relays');c.innerHTML='';for(let i=0;i<6;i++){const d=document.createElement('div');d.innerHTML=relayRow(i);c.appendChild(d.firstChild);} }\n"
-    "    async function refreshStatus(){try{const r=await fetch('/status');const s=await r.json();relayStates=[s.relays['0'],s.relays['1'],s.relays['2'],s.relays['3'],s.relays['4'],s.relays['5']];el('netMode').textContent=s.wifi_connected?('STA '+(s.ip_address||'')):'AP mode';draw();}catch(e){console.error(e);}}\n"
-    "    async function toggle(i){const body={};body[i]=!relayStates[i];try{const r=await fetch('/relay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(r.ok){relayStates[i]=!relayStates[i];draw();}}catch(e){console.error(e)}}\n"
-    "    async function setAll(on){const body={0:on,1:on,2:on,3:on,4:on,5:on};try{const r=await fetch('/relay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(r.ok){for(let i=0;i<6;i++) relayStates[i]=on;draw();}}catch(e){console.error(e)}}\n"
-    "    async function saveWifi(){const ssid=el('ssid').value.trim();const password=el('password').value;el('wifiMsg').textContent='Saving...';try{const r=await fetch('/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,password})});el('wifiMsg').textContent=r.ok?'Saved. Connecting...':'Failed to save';if(r.ok){setTimeout(refreshStatus,3000)}}catch(e){console.error(e);el('wifiMsg').textContent='Failed'}}\n"
-    "    refreshStatus();\n"
-    "  </script>\n"
-    "</body>\n"
-    "</html>\n";
+// Serve index.html from LittleFS
+#include <stdio.h>
 
 esp_err_t web_server_get_root(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, html_page, strlen(html_page));
+    FILE *f = fopen("/www/index.html", "r");
+    if (!f) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "index.html not found");
+        return ESP_FAIL;
+    }
+    char buf[1024];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) {
+            fclose(f);
+            return ESP_FAIL;
+        }
+    }
+    fclose(f);
+    httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }
 
 esp_err_t web_server_get_status(httpd_req_t *req)
 {
+    ESP_LOGI(TAG, "GET /status");
     cJSON *json = cJSON_CreateObject();
     if (json == NULL) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to create JSON");
@@ -150,16 +85,43 @@ esp_err_t web_server_get_status(httpd_req_t *req)
 
 esp_err_t web_server_post_relay(httpd_req_t *req)
 {
-    char content[1024];
-    int recv_len = httpd_req_recv(req, content, sizeof(content) - 1);
-    if (recv_len <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to receive data");
+    ESP_LOGI(TAG, "POST /relay len=%d", (int)req->content_len);
+    
+    // Check content length
+    if (req->content_len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
         return ESP_FAIL;
     }
-    content[recv_len] = '\0';
+
+    if (req->content_len >= 1024) { // Reduced from 4096 to 1024
+        httpd_resp_send_err(req, HTTPD_413_CONTENT_TOO_LARGE, "Body too large");
+        return ESP_FAIL;
+    }
+
+    // Use a smaller buffer to avoid stack overflow
+    char content[1024];
+    int total_len = req->content_len;
+    int cur_len = 0;
     
+    // Read data in smaller chunks to be safer
+    while (cur_len < total_len) {
+        int chunk_size = (total_len - cur_len) > 256 ? 256 : (total_len - cur_len);
+        int received = httpd_req_recv(req, content + cur_len, chunk_size);
+        
+        if (received <= 0) {
+            if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            ESP_LOGE(TAG, "Failed to receive data: %d", received);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to receive data");
+            return ESP_FAIL;
+        }
+        cur_len += received;
+    }
+    content[cur_len] = '\0';
+
     ESP_LOGI(TAG, "Received relay control: %s", content);
-    
+
     esp_err_t ret = relay_set_multiple(content);
     if (ret != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to set relay state");
@@ -172,14 +134,43 @@ esp_err_t web_server_post_relay(httpd_req_t *req)
 
 esp_err_t web_server_post_wifi(httpd_req_t *req)
 {
-    char content[1024];
-    int recv_len = httpd_req_recv(req, content, sizeof(content) - 1);
-    if (recv_len <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to receive data");
+    ESP_LOGI(TAG, "POST /wifi len=%d", (int)req->content_len);
+    
+    // Check content length
+    if (req->content_len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
         return ESP_FAIL;
     }
-    content[recv_len] = '\0';
+
+    if (req->content_len >= 1024) { // Reduced from 2048 to 1024
+        httpd_resp_send_err(req, HTTPD_413_CONTENT_TOO_LARGE, "Body too large");
+        return ESP_FAIL;
+    }
+
+    // Use a smaller buffer to avoid stack overflow
+    char content[1024];
+    int total_len = req->content_len;
+    int cur_len = 0;
     
+    // Read data in smaller chunks to be safer
+    while (cur_len < total_len) {
+        int chunk_size = (total_len - cur_len) > 256 ? 256 : (total_len - cur_len);
+        int received = httpd_req_recv(req, content + cur_len, chunk_size);
+        
+        if (received <= 0) {
+            if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            ESP_LOGE(TAG, "Failed to receive data: %d", received);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to receive data");
+            return ESP_FAIL;
+        }
+        cur_len += received;
+    }
+    content[cur_len] = '\0';
+
+    ESP_LOGI(TAG, "Received WiFi config: %s", content);
+
     cJSON *json = cJSON_Parse(content);
     if (json == NULL) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");

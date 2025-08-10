@@ -13,6 +13,7 @@
 #include "esp_ota_ops.h"
 #include "app_mqtt.h"
 #include "cJSON.h"
+#include "esp_littlefs.h"
 
 #include "wifi_manager.h"
 #include "relay_control.h"
@@ -114,21 +115,33 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    // Mount LittleFS at /www for serving web assets
+    esp_vfs_littlefs_conf_t lfs_conf = {
+        .base_path = "/www",
+        .partition_label = "littlefs",
+        .format_if_mount_failed = true,
+        .dont_mount = false,
+    };
+    ret = esp_vfs_littlefs_register(&lfs_conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to mount LittleFS (err=%s)", esp_err_to_name(ret));
+    } else {
+        size_t total = 0, used = 0;
+        if (esp_littlefs_info(lfs_conf.partition_label, &total, &used) == ESP_OK) {
+            ESP_LOGI(TAG, "LittleFS mounted at /www, size=%u, used=%u", (unsigned)total, (unsigned)used);
+        }
+    }
+
     // Initialize relay control
     relay_control_init();
 
-    // Initialize WiFi
+    // Initialize WiFi and bootstrap connection flow
     wifi_manager_init();
-    
-    // Try to connect to saved WiFi credentials
-    esp_err_t wifi_ret = wifi_manager_try_connect_saved();
-    if (wifi_ret != ESP_OK) {
-        ESP_LOGI(TAG, "No saved WiFi credentials, starting AP mode");
-        wifi_manager_start_ap();
-    }
+    wifi_manager_bootstrap();
 
     // Initialize MQTT client
     mqtt_client_init();
+    mqtt_client_start(); // Start the MQTT client
 
     // Initialize web server
     web_server_init();

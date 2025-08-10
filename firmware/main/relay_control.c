@@ -3,6 +3,7 @@
 #include "driver/gpio.h"
 #include "cJSON.h"
 #include "app_mqtt.h"
+#include <stdlib.h>
 
 static const char *TAG = "RELAY_CONTROL";
 
@@ -82,35 +83,44 @@ esp_err_t relay_set_multiple(const char* json_data)
         ESP_LOGE(TAG, "Failed to parse JSON data");
         return ESP_ERR_INVALID_ARG;
     }
-    
-    esp_err_t ret = ESP_OK;
-    cJSON *item = json->child;
-    
-    while (item != NULL) {
-        if (cJSON_IsNumber(item)) {
-            int relay_id = item->valueint;
-            bool state = cJSON_IsTrue(item);
-            
-            if (relay_id >= 0 && relay_id < NUM_RELAYS) {
-                esp_err_t set_ret = relay_set_state(relay_id, state);
-                if (set_ret != ESP_OK) {
-                    ret = set_ret;
-                }
-            } else {
-                ESP_LOGE(TAG, "Invalid relay ID in JSON: %d", relay_id);
-                ret = ESP_ERR_INVALID_ARG;
-            }
-        }
-        item = item->next;
+    if (!cJSON_IsObject(json)) {
+        ESP_LOGE(TAG, "Expected JSON object of relay states");
+        cJSON_Delete(json);
+        return ESP_ERR_INVALID_ARG;
     }
-    
+
+    esp_err_t ret = ESP_OK;
+    for (cJSON *item = json->child; item != NULL; item = item->next) {
+        if (item->string == NULL) {
+            continue;
+        }
+        // Keys are "0".."5"
+        char *endptr = NULL;
+        long relay_id_long = strtol(item->string, &endptr, 10);
+        if (endptr == item->string || relay_id_long < 0 || relay_id_long >= NUM_RELAYS) {
+            ESP_LOGE(TAG, "Invalid relay key: '%s'", item->string);
+            ret = ESP_ERR_INVALID_ARG;
+            continue;
+        }
+        int relay_id = (int)relay_id_long;
+        if (!cJSON_IsBool(item)) {
+            ESP_LOGE(TAG, "Invalid state for relay %d; expected boolean", relay_id);
+            ret = ESP_ERR_INVALID_ARG;
+            continue;
+        }
+        bool state = cJSON_IsTrue(item);
+        esp_err_t set_ret = relay_set_state(relay_id, state);
+        if (set_ret != ESP_OK) {
+            ret = set_ret;
+        }
+    }
+
     cJSON_Delete(json);
-    
+
     if (ret == ESP_OK) {
-        // Publish status after successful update
         relay_publish_status();
     }
-    
+
     return ret;
 }
 

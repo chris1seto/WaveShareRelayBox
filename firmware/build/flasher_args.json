@@ -10,11 +10,13 @@
     "flash_files" : {
         "0x0" : "bootloader/bootloader.bin",
         "0x10000" : "waveshare-relay-firmware.bin",
-        "0x8000" : "partition_table/partition-table.bin"
+        "0x8000" : "partition_table/partition-table.bin",
+        "0x3d0000" : "littlefs.bin"
     },
     "bootloader" : { "offset" : "0x0", "file" : "bootloader/bootloader.bin", "encrypted" : "false" },
     "app" : { "offset" : "0x10000", "file" : "waveshare-relay-firmware.bin", "encrypted" : "false" },
     "partition-table" : { "offset" : "0x8000", "file" : "partition_table/partition-table.bin", "encrypted" : "false" },
+    "littlefs" : { "offset" : "0x3d0000", "file" : "littlefs.bin", "encrypted" : "false" },
     "extra_esptool_args" : {
         "after"  : "hard_reset",
         "before" : "default_reset",

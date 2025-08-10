@@ -159,5 +159,7 @@ $<TARGET_FILE:idf::touch_element>
 $<TARGET_FILE:idf::usb>
 $<TARGET_FILE:idf::wifi_provisioning>
 $<TARGET_FILE:__idf_json>
+$<TARGET_FILE:idf::joltwallet__littlefs>
 $<TARGET_FILE:idf::main>
 $<TARGET_FILE:__idf_mqtt>
+$<TARGET_FILE:__idf_joltwallet__littlefs>

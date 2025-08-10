@@ -1,2 +1,2 @@
-source /home/chris/waveshare-relay-firmware/build/gdbinit/symbols
-source /home/chris/waveshare-relay-firmware/build/gdbinit/connect
+source /home/chris/WaveShareRelayBox/firmware/build/gdbinit/symbols
+source /home/chris/WaveShareRelayBox/firmware/build/gdbinit/connect

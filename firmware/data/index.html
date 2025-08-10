@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Waveshare ESP32-S3 Relay</title>
+  <style>
+    :root{--bg:#0f1226;--card:#161a36;--accent:#6c8cff;--ok:#2ecc71;--err:#e74c3c;--muted:#95a5a6}
+    *{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,
+    Cantarell,Noto Sans,sans-serif;background:linear-gradient(135deg,#0f1226,#11153a);color:#e9ecff;min-height:100vh}
+    .wrap{max-width:980px;margin:0 auto;padding:24px}
+    .title{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+    .card{background:var(--card);border-radius:14px;padding:20px;margin:12px 0;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+    .grid{display:grid;gap:16px}
+    @media(min-width:720px){.grid{grid-template-columns:1fr 1fr}}
+    .btn{appearance:none;border:0;background:var(--accent);color:#fff;padding:10px 14px;border-radius:10px;
+         font-weight:600;cursor:pointer;transition:.2s transform, .2s opacity}
+    .btn:hover{transform:translateY(-1px)}
+    .btn.secondary{background:#323760}
+    .btn.ok{background:var(--ok)} .btn.err{background:var(--err)}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .field{display:flex;flex-direction:column;gap:6px;flex:1 1 220px}
+    input[type=text],input[type=password]{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #2b2f5a;
+      background:#0f1230;color:#e9ecff;outline:none}input:focus{border-color:var(--accent)}
+    .badge{display:inline-flex;align-items:center;gap:6px;background:#212655;border:1px solid #2b2f5a;border-radius:999px;
+      padding:6px 10px;color:#c9d1ff;font-size:12px} .muted{color:var(--muted)}
+      .relays-grid{display:flex;flex-direction:column;gap:16px}
+    
+    .relay-item{display:flex;align-items:center;justify-content:space-between;padding:18px;border:1px solid #2b2f5a;
+      border-radius:16px;background:#111542;transition:all 0.3s ease}
+    .relay-item:hover{border-color:var(--accent);box-shadow:0 4px 20px rgba(108,140,255,0.15)}
+    .relay-name{font-weight:600;font-size:16px;color:#e9ecff}
+    
+    /* Modern Slider Toggle Switch */
+    .toggle-switch{position:relative;display:inline-block;width:64px;height:36px}
+    .toggle-switch input{opacity:0;width:0;height:0}
+    .toggle-switch-background{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#444a80;
+      border:2px solid #2b2f5a;transition:all 0.3s cubic-bezier(0.4, 0, 0.2, 1);border-radius:999px;
+      box-shadow:inset 0 2px 4px rgba(0,0,0,0.1)}
+    .toggle-switch-handle{position:absolute;height:28px;width:28px;left:2px;top:2px;background:linear-gradient(135deg,#fff,#f0f0f0);
+      border-radius:50%;transition:all 0.3s cubic-bezier(0.4, 0, 0.2, 1);box-shadow:0 2px 8px rgba(0,0,0,0.2)}
+    
+    .toggle-switch input:checked + .toggle-switch-background{background:var(--ok);border-color:var(--ok)}
+    .toggle-switch input:checked + .toggle-switch-background .toggle-switch-handle{transform:translateX(28px)}
+    .toggle-switch input:focus + .toggle-switch-background{box-shadow:0 0 0 3px rgba(46,204,113,0.3)}
+    
+    .toggle-switch[aria-busy="true"] .toggle-switch-background{opacity:0.6;cursor:not-allowed}
+    .toggle-switch[aria-busy="true"] .toggle-switch-handle{animation:pulse 1.5s infinite}
+    
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+    
+    /* Tab System */
+    .tabs{display:flex;gap:2px;margin-bottom:20px;background:#0d1030;border-radius:12px;padding:4px}
+    .tab{flex:1;padding:12px 16px;background:transparent;border:0;color:#aab2ff;border-radius:8px;cursor:pointer;transition:all 0.2s ease;font-weight:500}
+    .tab.active{background:var(--card);color:#e9ecff;box-shadow:0 2px 8px rgba(0,0,0,0.2)}
+    .tab:hover:not(.active){background:#1a1f4a;color:#c9d1ff}
+    
+    .tab-content{display:none}
+    .tab-content.active{display:block}
+    
+    .footer{margin-top:16px;font-size:12px;color:#aab2ff} code{background:#0d1030;padding:2px 6px;border-radius:6px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title"><span style="font-size:22px">🔌</span><h2 style="margin:0">Waveshare ESP32-S3 Relay</h2><span class="badge" id="netBadge">Network: <span id="netMode">Unknown</span></span></div>
+    
+    <!-- Tab Navigation -->
+    <div class="tabs">
+      <button class="tab active" onclick="showTab('home')">🏠 Home</button>
+      <button class="tab" onclick="showTab('config')">⚙️ Config</button>
+    </div>
+    
+    <!-- Home Tab - Relay Control -->
+    <div id="home-tab" class="tab-content active">
+      <div class="card">
+        <h3 style="margin-top:0">Relay Control</h3>
+        <div id="relays" class="relays-grid"></div>
+        <div class="row" style="margin-top:16px">
+          <button class="btn ok" onclick="setAll(true)">All ON</button>
+          <button class="btn err" onclick="setAll(false)">All OFF</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Config Tab - WiFi & MQTT Settings -->
+    <div id="config-tab" class="tab-content">
+      <div class="card">
+        <h3 style="margin-top:0">WiFi Configuration</h3>
+        <p class="muted">Configure WiFi connection settings. Credentials are saved in NVS.</p>
+        
+        <div class="field" style="margin-bottom:16px">
+          <label>SSID Selection</label>
+          <div class="row" style="gap:8px">
+            <select id="ssidSelect" style="flex:1" onchange="updateSsidInput()">
+              <option value="">Select from discovered networks...</option>
+            </select>
+            <button class="btn secondary" onclick="scanWifi()" style="white-space:nowrap">🔍 Scan</button>
+          </div>
+        </div>
+        
+        <div class="field" style="margin-bottom:16px">
+          <label>SSID (or enter manually)</label>
+          <input id="ssid" type="text" placeholder="WiFi SSID" autocomplete="off">
+        </div>
+        
+        <div class="field" style="margin-bottom:16px">
+          <label>Password</label>
+          <div class="row" style="gap:8px">
+            <input id="password" type="password" placeholder="WiFi Password" style="flex:1">
+            <button class="btn secondary" onclick="togglePassword()" style="white-space:nowrap">👁️</button>
+          </div>
+        </div>
+        
+        <div class="row" style="margin-top:16px">
+          <button class="btn" onclick="saveWifi()">Save & Connect</button>
+          <button class="btn secondary" onclick="refreshStatus()">Refresh Status</button>
+          <span id="wifiMsg" class="muted"></span>
+        </div>
+      </div>
+      
+      <div class="card">
+        <h3 style="margin-top:0">MQTT Configuration</h3>
+        <p class="muted">Configure MQTT broker connection for remote control.</p>
+        
+        <div class="field" style="margin-bottom:16px">
+          <label>Enable MQTT</label>
+          <div style="margin-top:8px">
+            <label class="toggle-switch" id="mqtt-toggle">
+              <input type="checkbox" id="mqttEnabled">
+              <span class="toggle-switch-background">
+                <span class="toggle-switch-handle"></span>
+              </span>
+            </label>
+          </div>
+        </div>
+        
+        <div class="field" style="margin-bottom:16px">
+          <label>Broker Address</label>
+          <input id="mqttBroker" type="text" placeholder="mqtt.example.com" autocomplete="off">
+        </div>
+        
+        <div class="field" style="margin-bottom:16px">
+          <label>Port</label>
+          <input id="mqttPort" type="number" placeholder="1883" value="1883" min="1" max="65535">
+        </div>
+        
+        <div class="row" style="margin-top:16px">
+          <button class="btn" onclick="saveMqtt()">Save MQTT Settings</button>
+          <span id="mqttMsg" class="muted"></span>
+        </div>
+      </div>
+    </div>
+    
+    <div class="footer">MQTT topics: <code>waveshare/relay/status</code>, <code>waveshare/relay/set</code></div>
+  </div>
+  <script>
+    let relayStates=[false,false,false,false,false,false];
+    
+    function el(id){return document.getElementById(id)}
+    
+    function showTab(tabName){
+      // Hide all tab contents
+      document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+      document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+      
+      // Show selected tab
+      document.getElementById(tabName + '-tab').classList.add('active');
+      event.target.classList.add('active');
+    }
+    
+    function relayRow(i){
+      const checked = relayStates[i] ? 'checked' : '';
+      const onClass = relayStates[i] ? ' on' : '';
+      return `
+        <div class="relay-item">
+          <div class="relay-name">Relay ${i+1}</div>
+          <label class="toggle-switch" id="toggle-${i}">
+            <input type="checkbox" ${checked} onchange="toggle(${i})">
+            <span class="toggle-switch-background">
+              <span class="toggle-switch-handle"></span>
+            </span>
+          </label>
+        </div>`;
+    }
+    
+    function draw(){
+      const container = el('relays');
+      if (!container) return;
+      container.innerHTML = '';
+      for(let i = 0; i < 6; i++){
+        const relayHtml = relayRow(i);
+        container.insertAdjacentHTML('beforeend', relayHtml);
+      }
+    }
+    
+    async function refreshStatus(){
+      try{
+        const response = await fetch('/status');
+        const status = await response.json();
+        relayStates = [
+          status.relays['0'], 
+          status.relays['1'], 
+          status.relays['2'], 
+          status.relays['3'], 
+          status.relays['4'], 
+          status.relays['5']
+        ];
+        el('netMode').textContent = status.wifi_connected ? 
+          ('STA ' + (status.ip_address || '')) : 'AP mode';
+        draw();
+      } catch(e){
+        console.error('Failed to refresh status:', e);
+      }
+    }
+    
+    async function toggle(i){
+      const toggle = document.getElementById(`toggle-${i}`);
+      if(toggle) toggle.setAttribute('aria-busy', 'true');
+      
+      const newState = !relayStates[i];
+      const body = {[i]: newState};
+      
+      try{
+        const response = await fetch('/relay', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body)
+        });
+        
+        if(response.ok){
+          relayStates[i] = newState;
+          // Update the toggle state
+          const checkbox = toggle?.querySelector('input[type="checkbox"]');
+          if(checkbox) checkbox.checked = newState;
+        } else {
+          throw new Error('Relay POST failed');
+        }
+      } catch(e){
+        console.error('Failed to toggle relay:', e);
+        // Revert the toggle state on error
+        const checkbox = toggle?.querySelector('input[type="checkbox"]');
+        if(checkbox) checkbox.checked = relayStates[i];
+      } finally {
+        if(toggle) toggle.removeAttribute('aria-busy');
+      }
+    }
+    
+    async function setAll(on){
+      // Optimistically update all toggles
+      for(let i = 0; i < 6; i++){
+        const checkbox = document.querySelector(`#toggle-${i} input[type="checkbox"]`);
+        if(checkbox) checkbox.checked = on;
+      }
+      
+      const body = {0: on, 1: on, 2: on, 3: on, 4: on, 5: on};
+      
+      try{
+        const response = await fetch('/relay', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body)
+        });
+        
+        if(response.ok){
+          for(let i = 0; i < 6; i++) relayStates[i] = on;
+          draw(); // Redraw to ensure consistency
+        } else {
+          throw new Error('Bulk relay POST failed');
+        }
+      } catch(e){
+        console.error('Failed to set all relays:', e);
+        draw(); // Redraw to revert to actual state
+      }
+    }
+    
+    async function saveWifi(){
+      const ssid = el('ssid').value.trim();
+      const password = el('password').value;
+      el('wifiMsg').textContent = 'Saving...';
+      
+      try{
+        const response = await fetch('/wifi', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ssid, password})
+        });
+        
+        if(response.ok){
+          el('wifiMsg').textContent = 'Saved. Connecting...';
+          setTimeout(refreshStatus, 3000);
+        } else {
+          el('wifiMsg').textContent = 'Failed to save';
+        }
+      } catch(e){
+        console.error('Failed to save WiFi:', e);
+        el('wifiMsg').textContent = 'Failed';
+      }
+    }
+    
+    async function saveMqtt(){
+      const enabled = el('mqttEnabled').checked;
+      const broker = el('mqttBroker').value.trim();
+      const port = parseInt(el('mqttPort').value);
+      
+      if(enabled && (!broker || port < 1 || port > 65535)){
+        el('mqttMsg').textContent = 'Please enter valid broker and port';
+        return;
+      }
+      
+      el('mqttMsg').textContent = 'Saving...';
+      
+      try{
+        const response = await fetch('/mqtt', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({enabled, broker, port})
+        });
+        
+        if(response.ok){
+          el('mqttMsg').textContent = 'MQTT settings saved';
+        } else {
+          el('mqttMsg').textContent = 'Failed to save MQTT settings';
+        }
+      } catch(e){
+        console.error('Failed to save MQTT:', e);
+        el('mqttMsg').textContent = 'Failed';
+      }
+    }
+    
+    async function scanWifi(){
+      const scanBtn = event.target;
+      const originalText = scanBtn.textContent;
+      scanBtn.textContent = 'Scanning...';
+      scanBtn.disabled = true;
+      
+      try{
+        const response = await fetch('/wifi/scan');
+        const networks = await response.json();
+        
+        const select = el('ssidSelect');
+        select.innerHTML = '<option value="">Select from discovered networks...</option>';
+        
+        networks.forEach(network => {
+          const option = document.createElement('option');
+          option.value = network.ssid;
+          option.textContent = `${network.ssid} (${network.rssi} dBm)`;
+          select.appendChild(option);
+        });
+        
+        if(networks.length === 0){
+          select.innerHTML = '<option value="">No networks found</option>';
+        }
+      } catch(e){
+        console.error('Failed to scan WiFi:', e);
+        el('ssidSelect').innerHTML = '<option value="">Scan failed</option>';
+      } finally {
+        scanBtn.textContent = originalText;
+        scanBtn.disabled = false;
+      }
+    }
+    
+    function updateSsidInput(){
+      const selectedSsid = el('ssidSelect').value;
+      if(selectedSsid){
+        el('ssid').value = selectedSsid;
+      }
+    }
+    
+    function togglePassword(){
+      const passwordInput = el('password');
+      const toggleBtn = event.target;
+      
+      if(passwordInput.type === 'password'){
+        passwordInput.type = 'text';
+        toggleBtn.textContent = '🙈';
+      } else {
+        passwordInput.type = 'password';
+        toggleBtn.textContent = '👁️';
+      }
+    }
+    
+    // Initialize the interface
+    refreshStatus();
+  </script>
+</body>
+</html>
+
+

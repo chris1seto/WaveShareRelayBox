@@ -1,4 +1,4 @@
-# Install script for directory: /home/chris/waveshare-relay-firmware/main
+# Install script for directory: /home/chris/WaveShareRelayBox/firmware/main
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
