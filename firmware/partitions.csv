@@ -1,7 +1,8 @@
-# Name,   Type, SubType, Offset,  Size, Flags
-nvs,      data, nvs,     0x9000,  0x6000,
-phy_init, data, phy,     0xf000,  0x1000,
-factory,  app,  factory, 0x10000, 0x140000,
-ota_0,    app,  ota_0,   0x150000,0x140000,
-ota_1,    app,  ota_1,   0x290000,0x140000,
-littlefs, data, littlefs,,         0x30000,
+# Fits 4 MB flash. Two OTA slots so an update can roll back if the new image fails.
+# nvs keeps the same offset/size as firmware v1.x so saved Wi-Fi/MQTT settings survive.
+# Name,   Type, SubType,  Offset,   Size
+nvs,      data, nvs,      0x9000,   0x6000,
+otadata,  data, ota,      0xF000,   0x2000,
+ota_0,    app,  ota_0,    0x20000,  0x1E0000,
+ota_1,    app,  ota_1,    0x200000, 0x1E0000,
+coredump, data, coredump, 0x3E0000, 0x10000,

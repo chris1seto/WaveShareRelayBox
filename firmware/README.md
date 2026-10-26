@@ -1,295 +1,115 @@
-# Waveshare ESP32-S3 Relay Firmware
+# Waveshare ESP32-S3-Relay-6CH firmware
 
-A custom firmware for the Waveshare ESP32-S3-Relay-6CH board that provides WiFi connectivity, web-based control interface, MQTT integration, and OTA update capabilities.
+Firmware for the Waveshare ESP32-S3-Relay-6CH board, built on **ESP-IDF v6.1**.
 
-## Features
+- Web UI and JSON API for the 6 relays, with per-relay names
+- Wi-Fi setup through a temporary access point; reconnects on its own after router outages
+- Configurable **hostname**, used for DHCP, **mDNS** (`http://<hostname>.local/`) and the MQTT client ID
+- **NTP** time sync with a configurable server and timezone
+- **MQTT**: JSON and per-relay topics, retained state, last-will availability, optional TLS, and **Home Assistant discovery**
+- **OTA updates** from the web UI or `curl`, with automatic rollback if the new image doesn't come up
+- Power-on behaviour: restore last state, all off or all on
+- Optional admin password (HTTP Basic auth)
+- Factory reset from the web UI, or by holding **BOOT** for 5 seconds
+- Crash dumps saved to flash (`idf.py coredump-info`)
 
-- **WiFi Connectivity**: Connects to existing WiFi networks or creates an access point for configuration
-- **Web UI**: Modern, responsive web interface for relay control and system monitoring
-- **MQTT Client**: Publishes relay status and accepts control commands via MQTT
-- **Relay Control**: Individual and batch control of 6 relays via web interface or MQTT
-- **OTA Updates**: Over-the-air firmware updates via web interface
-- **System Monitoring**: Real-time status monitoring including WiFi, MQTT, memory, and uptime
+## Building
 
-## Hardware Requirements
-
-- Waveshare ESP32-S3-Relay-6CH board
-- USB-C cable for programming and power
-- WiFi network (optional, device can run in AP mode)
-
-## Software Requirements
-
-- ESP-IDF v5.0 or later
-- Python 3.7 or later
-- Git
-
-## Installation and Setup
-
-### 1. Clone the Repository
+Install ESP-IDF v6.1 ([guide](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/get-started/)), then:
 
 ```bash
-git clone <repository-url>
-cd waveshare-relay-firmware
-```
-
-### 2. Install ESP-IDF
-
-Follow the official ESP-IDF installation guide: https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/
-
-### 3. Set up the Environment
-
-```bash
-# Source the ESP-IDF environment
-source $HOME/.espressif/esp-idf/export.sh
-
-# Or if using the ESP-IDF installer
-source ~/esp/esp-idf/export.sh
-```
-
-### 4. Configure the Project
-
-```bash
-# Configure the project
-idf.py menuconfig
-```
-
-Key configuration options:
-- **WiFi Settings**: Set your WiFi SSID and password
-- **MQTT Settings**: Configure MQTT broker URL and credentials
-- **GPIO Pins**: Verify relay GPIO pin assignments match your board
-
-### 5. Build and Flash
-
-```bash
-# Build the project
+. ~/esp/esp-idf-v6.1/export.sh
+idf.py set-target esp32s3     # first time only; creates sdkconfig from sdkconfig.defaults
 idf.py build
-
-# Flash to the device
-idf.py flash
-
-# Monitor serial output
-idf.py monitor
 ```
 
-## Usage
+The IDF component manager downloads `cjson`, `mqtt` and `mdns` on the first build. All three were part of ESP-IDF before v6.0. Their versions are pinned in `dependencies.lock`.
 
-### Initial Setup
+Board options (relay GPIOs, polarity, default hostname, setup AP name and password, NTP and timezone defaults, reset button) are under **Relay Box** in `idf.py menuconfig`.
 
-1. **First Boot**: The device will start in AP mode with SSID "Waveshare-Relay-AP" and password "12345678"
-2. **Connect to AP**: Connect your computer/phone to the AP
-3. **Access Web Interface**: Open a browser and navigate to `http://192.168.4.1`
-4. **Configure WiFi**: Use the WiFi configuration tab to set up your network credentials
-5. **Save Settings**: The device will restart and connect to your WiFi network
+## Flashing
 
-### Web Interface
-
-The web interface provides four main sections:
-
-#### 1. Relay Control
-- Individual control of each relay (ON/OFF)
-- Visual status indicators
-- Real-time state updates
-
-#### 2. System Status
-- WiFi connection status
-- IP address
-- MQTT connection status
-- Free memory
-- Uptime
-- Firmware version
-
-#### 3. WiFi Configuration
-- Set WiFi SSID and password
-- Save credentials to NVS
-- Automatic reconnection
-
-#### 4. OTA Update
-- Upload new firmware files (.bin)
-- Automatic restart after successful update
-
-### MQTT Integration
-
-The device publishes and subscribes to MQTT topics for remote control:
-
-#### Topics
-- **Status**: `waveshare/relay/status` - Current relay states
-- **Control**: `waveshare/relay/set` - Relay control commands
-- **Config**: `waveshare/relay/config` - Device configuration
-
-#### Control Messages
-
-Send JSON messages to `waveshare/relay/set` to control relays:
-
-```json
-// Turn on relay 0 and turn off relay 1
-{"0": true, "1": false}
-
-// Turn on only relay 2
-{"2": true}
-
-// Turn off all relays
-{"0": false, "1": false, "2": false, "3": false, "4": false, "5": false}
-```
-
-#### Status Messages
-
-The device publishes status updates to `waveshare/relay/status`:
-
-```json
-{
-  "0": true,
-  "1": false,
-  "2": true,
-  "3": false,
-  "4": false,
-  "5": true
-}
-```
-
-## Configuration
-
-### WiFi Settings
-
-The device supports two modes:
-- **Station Mode**: Connects to existing WiFi network
-- **Access Point Mode**: Creates its own network for configuration
-
-WiFi credentials are stored in NVS and persist across reboots.
-
-### MQTT Settings
-
-Configure MQTT broker settings in `main/mqtt_client.h`:
-
-```c
-#define MQTT_BROKER_URL "mqtt://192.168.1.100"
-#define MQTT_BROKER_PORT 1883
-#define MQTT_CLIENT_ID "waveshare-relay-esp32s3"
-#define MQTT_USERNAME ""
-#define MQTT_PASSWORD ""
-```
-
-### GPIO Configuration
-
-Relay GPIO pins are configured in `main/relay_control.h`:
-
-```c
-#define RELAY_1_GPIO GPIO_NUM_2
-#define RELAY_2_GPIO GPIO_NUM_3
-#define RELAY_3_GPIO GPIO_NUM_4
-#define RELAY_4_GPIO GPIO_NUM_5
-#define RELAY_5_GPIO GPIO_NUM_6
-#define RELAY_6_GPIO GPIO_NUM_7
-```
-
-**Important**: Verify these GPIO assignments match your specific board layout.
-
-## Development
-
-### Project Structure
-
-```
-waveshare-relay-firmware/
-├── main/                    # Main application code
-│   ├── main.c              # Application entry point
-│   ├── relay_control.c     # Relay GPIO control
-│   ├── wifi_manager.c      # WiFi connection management
-│   ├── mqtt_client.c       # MQTT client implementation
-│   ├── web_server.c        # HTTP server and web UI
-│   └── ota_update.c        # OTA update functionality
-├── CMakeLists.txt          # Main CMake configuration
-├── sdkconfig.defaults      # Default SDK configuration
-├── partitions.csv          # Partition table
-└── README.md              # This file
-```
-
-### Building
+The first flash has to go over USB, because the partition table changed from v1.x:
 
 ```bash
-# Clean build
-idf.py clean
-
-# Build with verbose output
-idf.py build -v
-
-# Build and flash
-idf.py build flash
-
-# Build, flash, and monitor
-idf.py build flash monitor
+idf.py -p /dev/ttyACM0 flash monitor
 ```
 
-### Debugging
+Saved Wi-Fi and MQTT settings from v1.x are kept: the NVS partition is unchanged, and the old MQTT settings are migrated automatically.
+
+After that, update over the network with the web UI (**System → Firmware update**) or with:
 
 ```bash
-# Monitor serial output
-idf.py monitor
-
-# Monitor with specific baud rate
-idf.py monitor -b 115200
-
-# Monitor with filter
-idf.py monitor --monitor-filter "RELAY_CONTROL"
+curl --data-binary @build/waveshare-relay-firmware.bin http://waveshare-relay-xxxxxx.local/api/ota
 ```
 
-## Troubleshooting
+Add `-u admin:<password>` if you set an admin password. A new image has to run for 30 s with Wi-Fi connected (or 5 minutes without Wi-Fi) before it is confirmed. If it crashes or resets before then, the bootloader goes back to the previous image.
 
-### Common Issues
+## First-time setup
 
-1. **WiFi Connection Fails**
-   - Check SSID and password in configuration
-   - Verify network is 2.4GHz (ESP32-S3 doesn't support 5GHz)
-   - Check signal strength
+1. With no saved network, the board starts an access point called `WaveshareRelay-XXXX` (password `waveshare`).
+2. Join it and open `http://192.168.4.1/`.
+3. Go to **Network**, pick your network and click **Connect**.
+4. The device then shows up at `http://waveshare-relay-xxxxxx.local/`, where `xxxxxx` is the end of its MAC address. The setup access point turns itself off about two minutes after the device connects.
 
-2. **MQTT Connection Issues**
-   - Verify broker URL and port
-   - Check network connectivity
-   - Ensure broker is running and accessible
+If the device loses Wi-Fi for 30 seconds, the setup access point comes back while it keeps trying to reconnect.
 
-3. **Relay Not Responding**
-   - Verify GPIO pin assignments
-   - Check hardware connections
-   - Monitor serial output for errors
+## HTTP API
 
-4. **OTA Update Fails**
-   - Ensure firmware file is valid
-   - Check partition table configuration
-   - Verify sufficient flash space
+| Method | Path | Body / notes |
+|---|---|---|
+| GET | `/api/status` | relays, Wi-Fi, MQTT, time, system |
+| GET | `/api/config` | settings (passwords are not returned) |
+| POST | `/api/config` | any subset of the config fields, applied immediately |
+| POST | `/api/relays` | `{"0": true, "3": "toggle"}` |
+| GET | `/api/wifi/scan` | nearby networks |
+| POST | `/api/wifi` | `{"ssid": "...", "password": "..."}` |
+| POST | `/api/ota` | raw `.bin` as the request body |
+| POST | `/api/reboot` | |
+| POST | `/api/factory-reset` | erases all settings |
 
-### Log Levels
+`GET /status` and `POST /relay` from v1.x still work.
 
-Adjust log levels in `sdkconfig.defaults`:
+Example:
 
 ```bash
-# Set log level
-CONFIG_LOG_DEFAULT_LEVEL_INFO=y
-CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y
+curl -X POST -d '{"hostname":"garage-relays","timezone":"CET-1CEST,M3.5.0,M10.5.0/3"}' http://waveshare-relay-xxxxxx.local/api/config
 ```
 
-## License
+## MQTT
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+Relays are numbered 0-5. `<root>` defaults to `waveshare/relay`.
 
-## Contributing
+| Topic | Direction | Payload |
+|---|---|---|
+| `<root>/set` | → device | `{"0": true, "1": false, "2": "toggle"}` |
+| `<root>/relay/<n>/set` | → device | `ON`, `OFF` or `TOGGLE` |
+| `<root>/status` | ← retained | `{"0": true, ...}` |
+| `<root>/relay/<n>/state` | ← retained | `ON` / `OFF` |
+| `<root>/availability` | ← retained | `online` / `offline` (last will) |
+| `<root>/info` | ← retained | hostname, IP, firmware version |
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+The broker field takes a plain host (with the port field), or a full URI such as `mqtts://broker.example.com:8883`. TLS connections are checked against the built-in CA bundle. With Home Assistant discovery on, each relay appears as a switch under one device.
 
-## Support
+`examples/mqtt_test.py` is a small interactive test client.
 
-For issues and questions:
-- Check the troubleshooting section
-- Review the ESP-IDF documentation
-- Open an issue on the project repository
+## Layout
 
-## Changelog
+```
+main/
+  app_main.c      boot sequence, OTA confirmation, reset button
+  settings.c      NVS-backed settings and v1.x migration
+  relays.c        GPIO control, power-on state
+  wifi_mgr.c      station + setup AP, reconnect with backoff, scanning
+  net_services.c  mDNS, SNTP, timezone
+  mqtt_link.c     MQTT client, topics, Home Assistant discovery
+  ota.c           OTA upload, image checks, rollback confirmation
+  web_server.c    HTTP server, JSON API, auth
+  Kconfig.projbuild
+web/index.html    web UI (embedded in the firmware image)
+partitions.csv    nvs, otadata, 2 × 1.875 MB app slots, coredump (4 MB flash)
+```
 
-### v1.0.0
-- Initial release
-- WiFi connectivity (STA/AP modes)
-- Web-based relay control interface
-- MQTT integration
-- OTA update capability
-- System status monitoring
+## Relay polarity
+
+Relays default to **active-low** (GPIO low = ON), as in v1.x, and start ON when no state has been saved yet. If your board's relays come out inverted, turn off `Relay Box → Relays → Relays are active-low` in menuconfig.

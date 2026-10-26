@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay Box</title>
+<style>
+:root{
+  --bg:#f4f5f7;--card:#fff;--text:#1d2129;--muted:#6b7280;--line:#e3e5e8;
+  --accent:#2563eb;--accent-text:#fff;--ok:#16a34a;--warn:#d97706;--bad:#dc2626;
+  --off:#cbd2dc;--input:#fff;--shadow:0 1px 3px rgba(0,0,0,.08);
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#111318;--card:#1b1e25;--text:#e6e8ec;--muted:#9aa2ae;--line:#2c313b;
+  --accent:#4f8cff;--off:#3a404c;--input:#14171c;--shadow:none;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{background:var(--card);border-bottom:1px solid var(--line)}
+.bar{max-width:880px;margin:0 auto;padding:14px 16px;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.bar h1{font-size:18px;margin:0;flex:1 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pills{display:flex;gap:6px;flex-wrap:wrap}
+.pill{font-size:12px;padding:3px 9px;border-radius:99px;border:1px solid var(--line);color:var(--muted);display:inline-flex;gap:5px;align-items:center}
+.pill::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--off)}
+.pill.ok::before{background:var(--ok)} .pill.warn::before{background:var(--warn)} .pill.bad::before{background:var(--bad)}
+nav{max-width:880px;margin:0 auto;padding:0 8px;display:flex;overflow-x:auto}
+nav button{background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);padding:10px 12px;font:inherit;cursor:pointer;white-space:nowrap}
+nav button.active{color:var(--text);border-color:var(--accent)}
+main{max-width:880px;margin:0 auto;padding:16px}
+section{display:none} section.active{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px;box-shadow:var(--shadow)}
+.card h2{font-size:15px;margin:0 0 12px}
+.hint{color:var(--muted);font-size:13px;margin:4px 0 0}
+.relays{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+.relay{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border:1px solid var(--line);border-radius:8px}
+.relay .name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.relay .sub{color:var(--muted);font-size:12px}
+.switch{position:relative;width:48px;height:28px;flex:none}
+.switch input{opacity:0;width:0;height:0;position:absolute}
+.switch span{position:absolute;inset:0;background:var(--off);border-radius:99px;transition:.15s;cursor:pointer}
+.switch span::after{content:"";position:absolute;left:3px;top:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:.15s;box-shadow:0 1px 2px rgba(0,0,0,.3)}
+.switch input:checked+span{background:var(--ok)}
+.switch input:checked+span::after{transform:translateX(20px)}
+.switch input:focus-visible+span{outline:2px solid var(--accent);outline-offset:2px}
+.switch input:disabled+span{opacity:.5;cursor:wait}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:600px){.grid{grid-template-columns:1fr}}
+label{display:block;font-size:13px;color:var(--muted);margin-bottom:4px}
+input[type=text],input[type=password],input[type=number],select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--input);color:var(--text);font:inherit}
+input:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:transparent}
+.check{display:flex;gap:8px;align-items:center;color:var(--text);font-size:15px;margin:0;cursor:pointer}
+.check input{width:18px;height:18px}
+button.btn{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:6px;padding:8px 14px;font:inherit;cursor:pointer}
+button.btn:hover{border-color:var(--muted)}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-text)}
+button.danger{color:var(--bad);border-color:var(--bad)}
+button:disabled{opacity:.6;cursor:wait}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+table.kv{width:100%;border-collapse:collapse}
+table.kv td{padding:6px 0;border-bottom:1px solid var(--line);vertical-align:top}
+table.kv td:first-child{color:var(--muted);width:40%;padding-right:12px}
+table.kv tr:last-child td{border:0}
+.nets{margin-top:10px;border:1px solid var(--line);border-radius:6px;max-height:240px;overflow:auto}
+.nets div{padding:8px 10px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;justify-content:space-between;gap:8px}
+.nets div:last-child{border:0}
+.nets div:hover{background:var(--bg)}
+code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--bg);padding:1px 5px;border-radius:4px;word-break:break-all}
+progress{width:100%;height:10px;margin-top:10px}
+#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:10px 16px;border-radius:8px;max-width:calc(100% - 32px);opacity:0;pointer-events:none;transition:opacity .2s;z-index:10}
+#toast.show{opacity:1}
+#toast.err{background:var(--bad);color:#fff}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1 id="title">Relay Box</h1>
+    <div class="pills">
+      <span class="pill" id="pWifi">Wi-Fi</span>
+      <span class="pill" id="pMqtt">MQTT</span>
+      <span class="pill" id="pTime">Time</span>
+    </div>
+  </div>
+  <nav>
+    <button data-tab="relays" class="active">Relays</button>
+    <button data-tab="network">Network</button>
+    <button data-tab="mqtt">MQTT</button>
+    <button data-tab="system">System</button>
+  </nav>
+</header>
+
+<main>
+<!-- Relays -->
+<section id="relays" class="active">
+  <div class="card">
+    <div class="relays" id="relayList"></div>
+    <div class="actions">
+      <button class="btn" onclick="setAll(true)">All on</button>
+      <button class="btn" onclick="setAll(false)">All off</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Relay settings</h2>
+    <div class="grid" id="nameFields"></div>
+    <div style="margin-top:12px">
+      <label for="relayBoot">After power loss</label>
+      <select id="relayBoot">
+        <option value="restore">Restore last state</option>
+        <option value="off">All off</option>
+        <option value="on">All on</option>
+      </select>
+    </div>
+    <div class="actions"><button class="btn primary" onclick="saveRelaySettings(this)">Save</button></div>
+  </div>
+</section>
+
+<!-- Network -->
+<section id="network">
+  <div class="card">
+    <h2>Wi-Fi</h2>
+    <table class="kv" id="wifiInfo"></table>
+  </div>
+  <div class="card">
+    <h2>Connect to a network</h2>
+    <div class="grid">
+      <div><label for="ssid">Network name (SSID)</label><input id="ssid" type="text" autocomplete="off" maxlength="32"></div>
+      <div><label for="wpass">Password</label><input id="wpass" type="password" autocomplete="new-password" maxlength="64"></div>
+    </div>
+    <div class="nets" id="nets" hidden></div>
+    <div class="actions">
+      <button class="btn" onclick="scan(this)">Scan</button>
+      <button class="btn primary" onclick="saveWifi(this)">Connect</button>
+    </div>
+    <p class="hint">The setup access point stays up for a couple of minutes after connecting so you can read the new address here.</p>
+  </div>
+  <div class="card">
+    <h2>Hostname</h2>
+    <label for="hostname">Device name on the network</label>
+    <input id="hostname" type="text" maxlength="32" autocomplete="off" spellcheck="false">
+    <p class="hint">Lowercase letters, digits and dashes. Reachable as <code id="mdnsName">…</code> via mDNS, and used as the DHCP and MQTT client name.</p>
+    <div class="actions"><button class="btn primary" onclick="saveHostname(this)">Save</button></div>
+  </div>
+  <div class="card">
+    <h2>Time</h2>
+    <table class="kv" id="timeInfo"></table>
+    <div class="grid" style="margin-top:12px">
+      <div><label for="ntp">NTP server (empty to disable)</label><input id="ntp" type="text" maxlength="63" autocomplete="off"></div>
+      <div>
+        <label for="tzPreset">Timezone</label>
+        <select id="tzPreset" onchange="tzPresetChanged()"></select>
+      </div>
+    </div>
+    <div style="margin-top:12px" id="tzCustomRow">
+      <label for="tz">POSIX TZ string</label>
+      <input id="tz" type="text" maxlength="63" autocomplete="off" spellcheck="false">
+      <p class="hint">For example <code>CET-1CEST,M3.5.0,M10.5.0/3</code>.</p>
+    </div>
+    <div class="actions"><button class="btn primary" onclick="saveTime(this)">Save</button></div>
+  </div>
+</section>
+
+<!-- MQTT -->
+<section id="mqtt">
+  <div class="card">
+    <h2>Broker</h2>
+    <label class="check"><input type="checkbox" id="mqEnabled"> Enable MQTT</label>
+    <div class="grid" style="margin-top:12px">
+      <div><label for="mqHost">Host, or full URI (mqtt:// mqtts:// ws:// wss://)</label><input id="mqHost" type="text" maxlength="95" autocomplete="off" spellcheck="false"></div>
+      <div><label for="mqPort">Port (ignored when a URI is given)</label><input id="mqPort" type="number" min="1" max="65535"></div>
+      <div><label for="mqUser">Username</label><input id="mqUser" type="text" maxlength="63" autocomplete="off"></div>
+      <div><label for="mqPass">Password</label><input id="mqPass" type="password" maxlength="63" autocomplete="new-password"></div>
+      <div><label for="mqRoot">Root topic</label><input id="mqRoot" type="text" maxlength="63" autocomplete="off" spellcheck="false"></div>
+      <div style="align-self:end"><label class="check"><input type="checkbox" id="mqHa"> Home Assistant discovery</label></div>
+    </div>
+    <div class="actions">
+      <button class="btn primary" onclick="saveMqtt(this)">Save &amp; reconnect</button>
+      <button class="btn" onclick="clearMqttPass(this)" id="mqClear" hidden>Clear password</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Topics</h2>
+    <table class="kv" id="topics"></table>
+  </div>
+</section>
+
+<!-- System -->
+<section id="system">
+  <div class="card">
+    <h2>Device</h2>
+    <table class="kv" id="sysInfo"></table>
+  </div>
+  <div class="card">
+    <h2>Firmware update</h2>
+    <p class="hint" style="margin-top:0">Upload <code>build/waveshare-relay-firmware.bin</code>. If the new firmware fails to start, the device rolls back to the current one automatically.</p>
+    <div class="row" style="margin-top:12px">
+      <input type="file" id="fw" accept=".bin,application/octet-stream" style="flex:1 1 220px">
+      <button class="btn primary" onclick="upload(this)">Upload</button>
+    </div>
+    <progress id="fwProg" max="100" value="0" hidden></progress>
+  </div>
+  <div class="card">
+    <h2>Admin password</h2>
+    <p class="hint" style="margin-top:0" id="pwState"></p>
+    <div class="grid" style="margin-top:12px">
+      <div><label for="admin1">New password</label><input id="admin1" type="password" maxlength="63" autocomplete="new-password"></div>
+      <div><label for="admin2">Repeat</label><input id="admin2" type="password" maxlength="63" autocomplete="new-password"></div>
+    </div>
+    <div class="actions">
+      <button class="btn primary" onclick="savePassword(this,false)">Set password</button>
+      <button class="btn" onclick="savePassword(this,true)" id="pwClear">Remove password</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Maintenance</h2>
+    <div class="actions" style="margin-top:0">
+      <button class="btn" onclick="reboot(this)">Reboot</button>
+      <button class="btn danger" onclick="factoryReset(this)">Factory reset</button>
+    </div>
+    <p class="hint">Factory reset erases Wi-Fi, MQTT and all other settings. Holding the BOOT button for 5 seconds does the same.</p>
+  </div>
+</section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const RELAYS = 6;
+const TZ = [
+  ["UTC","UTC0"],
+  ["US Eastern","EST5EDT,M3.2.0,M11.1.0"],["US Central","CST6CDT,M3.2.0,M11.1.0"],
+  ["US Mountain","MST7MDT,M3.2.0,M11.1.0"],["US Arizona","MST7"],["US Pacific","PST8PDT,M3.2.0,M11.1.0"],
+  ["US Alaska","AKST9AKDT,M3.2.0,M11.1.0"],["US Hawaii","HST10"],
+  ["UK / Ireland","GMT0BST,M3.5.0/1,M10.5.0"],["Central Europe","CET-1CEST,M3.5.0,M10.5.0/3"],
+  ["Eastern Europe","EET-2EEST,M3.5.0/3,M10.5.0/4"],["India","IST-5:30"],["China","CST-8"],
+  ["Japan","JST-9"],["Australia Eastern","AEST-10AEDT,M10.1.0,M4.1.0/3"],["Australia Brisbane","AEST-10"],
+  ["New Zealand","NZST-12NZDT,M9.5.0,M4.1.0/3"],["Custom…",""]
+];
+let status = null, config = null, busy = new Set();
+
+// ---------- helpers
+function toast(msg, err){
+  const t = $('toast'); t.textContent = msg; t.className = 'show' + (err ? ' err' : '');
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.className = '', err ? 6000 : 3000);
+}
+async function api(path, opts = {}){
+  if (opts.json !== undefined){
+    opts.method = opts.method || 'POST';
+    opts.headers = {'Content-Type':'application/json'};
+    opts.body = JSON.stringify(opts.json);
+  }
+  const r = await fetch(path, opts);
+  if (r.status === 401){ location.reload(); throw new Error('Authentication required'); }
+  let data = null;
+  try { data = await r.json(); } catch(e) {}
+  if (!r.ok) throw new Error((data && data.error) || ('HTTP ' + r.status));
+  return data;
+}
+async function withBusy(btn, fn){
+  if (btn) btn.disabled = true;
+  try { await fn(); } catch(e){ toast(e.message, true); }
+  finally { if (btn) btn.disabled = false; }
+}
+function kv(table, rows){
+  table.replaceChildren(...rows.filter(Boolean).map(([k, v]) => {
+    const tr = document.createElement('tr');
+    const a = document.createElement('td'); a.textContent = k;
+    const b = document.createElement('td');
+    if (v instanceof Node) b.append(v); else b.textContent = v;
+    tr.append(a, b); return tr;
+  }));
+}
+function code(s){ const c = document.createElement('code'); c.textContent = s; return c; }
+function dur(s){
+  const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
+  return (d ? d+'d ' : '') + (d||h ? h+'h ' : '') + m + 'm';
+}
+function pill(el, cls, text){ el.className = 'pill ' + cls; el.textContent = text; }
+
+// ---------- tabs
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('active', x === b));
+  document.querySelectorAll('section').forEach(s => s.classList.toggle('active', s.id === b.dataset.tab));
+  try { localStorage.setItem('tab', b.dataset.tab); } catch(e) {}
+});
+{
+  let t = location.hash.slice(1);
+  try { t = t || localStorage.getItem('tab'); } catch(e) {}
+  if (t) document.querySelector(`nav button[data-tab="${t}"]`)?.click();
+}
+
+// ---------- relays
+function buildRelays(){
+  const list = $('relayList'), names = $('nameFields');
+  for (let i = 0; i < RELAYS; i++){
+    const row = document.createElement('div'); row.className = 'relay';
+    row.innerHTML = `<div style="min-width:0"><div class="name"></div><div class="sub">Channel ${i+1} · MQTT id ${i}</div></div>
+      <label class="switch"><input type="checkbox" aria-label="Relay ${i+1}"><span></span></label>`;
+    row.querySelector('input').onchange = e => setRelay(i, e.target.checked, e.target);
+    list.append(row);
+    const f = document.createElement('div');
+    f.innerHTML = `<label for="rn${i}">Channel ${i+1} name</label><input id="rn${i}" type="text" maxlength="24">`;
+    names.append(f);
+  }
+}
+function renderRelays(){
+  const rows = $('relayList').children;
+  status.relay_list.forEach((r, i) => {
+    rows[i].querySelector('.name').textContent = r.name;
+    const cb = rows[i].querySelector('input');
+    if (!busy.has(i)) cb.checked = r.on;
+  });
+}
+async function setRelay(i, on, cb){
+  busy.add(i); cb.disabled = true;
+  try { status = await api('/api/relays', {json: {[i]: on}}); renderRelays(); }
+  catch(e){ cb.checked = !on; toast(e.message, true); }
+  finally { busy.delete(i); cb.disabled = false; }
+}
+async function setAll(on){
+  const body = {}; for (let i = 0; i < RELAYS; i++) body[i] = on;
+  try { status = await api('/api/relays', {json: body}); renderRelays(); } catch(e){ toast(e.message, true); }
+}
+function saveRelaySettings(btn){
+  withBusy(btn, async () => {
+    const names = [];
+    for (let i = 0; i < RELAYS; i++){
+      const v = $('rn'+i).value.trim();
+      if (!v) throw new Error(`Channel ${i+1} needs a name`);
+      names.push(v);
+    }
+    config = await api('/api/config', {json: {relay_names: names, relay_boot: $('relayBoot').value}});
+    toast('Relay settings saved'); refresh();
+  });
+}
+
+// ---------- network
+function scan(btn){
+  withBusy(btn, async () => {
+    btn.textContent = 'Scanning…';
+    try {
+      const nets = await api('/api/wifi/scan');
+      const box = $('nets'); box.hidden = false;
+      box.replaceChildren();
+      if (!nets.length){ box.textContent = 'No networks found'; return; }
+      for (const n of nets){
+        const d = document.createElement('div');
+        const a = document.createElement('span'); a.textContent = (n.secure ? '🔒 ' : '') + n.ssid;
+        const b = document.createElement('span'); b.className = 'hint'; b.style.margin = 0;
+        b.textContent = `${n.rssi} dBm · ch ${n.channel}`;
+        d.append(a, b);
+        d.onclick = () => { $('ssid').value = n.ssid; box.hidden = true; $('wpass').focus(); };
+        box.append(d);
+      }
+    } finally { btn.textContent = 'Scan'; }
+  });
+}
+function saveWifi(btn){
+  withBusy(btn, async () => {
+    const ssid = $('ssid').value.trim(), password = $('wpass').value;
+    if (!ssid) throw new Error('Enter a network name');
+    const r = await api('/api/wifi', {json: {ssid, password}});
+    $('wpass').value = ''; toast(r.message);
+  });
+}
+function saveHostname(btn){
+  withBusy(btn, async () => {
+    const hostname = $('hostname').value.trim().toLowerCase();
+    if (!/^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(hostname))
+      throw new Error('Use a-z, 0-9 and dashes (not at the start or end), up to 32 characters');
+    config = await api('/api/config', {json: {hostname}});
+    toast(`Hostname set. Now reachable at ${hostname}.local`); fillConfig(); refresh();
+  });
+}
+function tzPresetChanged(){
+  const v = $('tzPreset').value;
+  $('tzCustomRow').hidden = v !== '';
+  if (v) $('tz').value = v;
+}
+function saveTime(btn){
+  withBusy(btn, async () => {
+    const tz = ($('tzPreset').value || $('tz').value).trim();
+    if (!tz) throw new Error('Enter a timezone');
+    config = await api('/api/config', {json: {ntp_server: $('ntp').value.trim(), timezone: tz}});
+    toast('Time settings saved'); refresh();
+  });
+}
+
+// ---------- mqtt
+function saveMqtt(btn){
+  withBusy(btn, async () => {
+    const m = {
+      enabled: $('mqEnabled').checked, host: $('mqHost').value.trim(),
+      port: parseInt($('mqPort').value || '1883', 10), username: $('mqUser').value.trim(),
+      root_topic: $('mqRoot').value.trim().replace(/\/+$/, ''), ha_discovery: $('mqHa').checked,
+    };
+    if ($('mqPass').value) m.password = $('mqPass').value;
+    if (m.enabled && !m.host) throw new Error('Enter the broker host');
+    if (!(m.port >= 1 && m.port <= 65535)) throw new Error('Port must be 1-65535');
+    if (!m.root_topic || /[#+]/.test(m.root_topic)) throw new Error('Root topic must be set and must not contain # or +');
+    config = await api('/api/config', {json: {mqtt: m}});
+    $('mqPass').value = ''; toast('MQTT settings saved'); fillConfig(); refresh();
+  });
+}
+function clearMqttPass(btn){
+  withBusy(btn, async () => {
+    config = await api('/api/config', {json: {mqtt: {password: ''}}});
+    toast('MQTT password cleared'); fillConfig();
+  });
+}
+function renderTopics(){
+  const r = (config && config.mqtt.root_topic) || 'waveshare/relay';
+  kv($('topics'), [
+    ['Command (JSON)', code(`${r}/set  {"0":true,"3":"toggle"}`)],
+    ['Command (one relay)', code(`${r}/relay/<0-5>/set  ON | OFF | TOGGLE`)],
+    ['State (JSON)', code(`${r}/status`)],
+    ['State (one relay)', code(`${r}/relay/<0-5>/state`)],
+    ['Availability', code(`${r}/availability  online | offline`)],
+    ['Device info', code(`${r}/info`)],
+  ]);
+}
+
+// ---------- system
+function upload(btn){
+  const f = $('fw').files[0];
+  if (!f) return toast('Choose a .bin file first', true);
+  if (!confirm(`Install ${f.name} (${(f.size/1024).toFixed(0)} KB)? The device will reboot.`)) return;
+  btn.disabled = true;
+  const prog = $('fwProg'); prog.hidden = false; prog.value = 0;
+  const x = new XMLHttpRequest();
+  x.open('POST', '/api/ota');
+  x.setRequestHeader('Content-Type', 'application/octet-stream');
+  x.upload.onprogress = e => { if (e.lengthComputable) prog.value = e.loaded * 100 / e.total; };
+  x.onload = () => {
+    let r = {}; try { r = JSON.parse(x.responseText); } catch(e) {}
+    if (x.status === 200){ toast('Update installed, rebooting…'); waitForReboot(); }
+    else { toast(r.error || ('Upload failed (HTTP ' + x.status + ')'), true); btn.disabled = false; prog.hidden = true; }
+  };
+  x.onerror = () => { toast('Upload failed: connection lost', true); btn.disabled = false; prog.hidden = true; };
+  x.send(f);
+}
+function waitForReboot(){
+  let tries = 0;
+  const t = setInterval(async () => {
+    tries++;
+    try { await api('/api/status'); clearInterval(t); location.reload(); }
+    catch(e){ if (tries > 60){ clearInterval(t); toast('Device did not come back; reload the page manually', true); } }
+  }, 2000);
+}
+function reboot(btn){
+  if (!confirm('Reboot the device?')) return;
+  withBusy(btn, async () => { await api('/api/reboot', {method:'POST'}); toast('Rebooting…'); setTimeout(waitForReboot, 3000); });
+}
+function factoryReset(btn){
+  if (!confirm('Erase all settings, including Wi-Fi? The device will restart as a setup access point.')) return;
+  withBusy(btn, async () => { await api('/api/factory-reset', {method:'POST'}); toast('Settings erased. Join the device\'s setup Wi-Fi to configure it again.'); });
+}
+function savePassword(btn, clear){
+  withBusy(btn, async () => {
+    let pw = '';
+    if (!clear){
+      pw = $('admin1').value;
+      if (pw.length < 4) throw new Error('Use at least 4 characters');
+      if (pw !== $('admin2').value) throw new Error('Passwords do not match');
+    } else if (!confirm('Remove the password? Anyone on the network will be able to control the relays.')) return;
+    config = await api('/api/config', {json: {admin_password: pw}});
+    $('admin1').value = $('admin2').value = '';
+    fillConfig();
+    toast(clear ? 'Password removed' : 'Password set. Your browser will ask for it (any user name).');
+  });
+}
+
+// ---------- rendering
+function fillConfig(){
+  const c = config;
+  $('hostname').value = c.hostname;
+  $('mdnsName').textContent = c.hostname + '.local';
+  $('ntp').value = c.ntp_server;
+  const preset = TZ.find(t => t[1] === c.timezone);
+  $('tzPreset').value = preset ? preset[1] : '';
+  $('tz').value = c.timezone;
+  $('tzCustomRow').hidden = !!preset;
+  $('relayBoot').value = c.relay_boot;
+  c.relay_names.forEach((n, i) => $('rn'+i).value = n);
+  $('mqEnabled').checked = c.mqtt.enabled;
+  $('mqHost').value = c.mqtt.host;
+  $('mqPort').value = c.mqtt.port;
+  $('mqUser').value = c.mqtt.username;
+  $('mqPass').placeholder = c.mqtt.password_set ? '(unchanged)' : '';
+  $('mqClear').hidden = !c.mqtt.password_set;
+  $('mqRoot').value = c.mqtt.root_topic;
+  $('mqHa').checked = c.mqtt.ha_discovery;
+  $('pwState').textContent = c.admin_password_set
+    ? 'A password is set. The web UI and API require it (HTTP Basic auth, any user name).'
+    : 'No password is set: anyone on the network can use this page and the API.';
+  $('pwClear').hidden = !c.admin_password_set;
+  if (!$('ssid').value) $('ssid').value = c.wifi_ssid || '';
+  renderTopics();
+}
+function renderStatus(){
+  const s = status, w = s.wifi;
+  document.title = s.hostname + ' · Relay Box';
+  $('title').textContent = s.hostname;
+  pill($('pWifi'), w.connected ? 'ok' : (w.ap_active ? 'warn' : 'bad'),
+       w.connected ? `Wi-Fi ${w.rssi} dBm` : (w.ap_active ? 'Setup AP' : 'Wi-Fi down'));
+  const ms = s.mqtt.state;
+  pill($('pMqtt'), ms === 'connected' ? 'ok' : ms === 'connecting' ? 'warn' : '', 'MQTT ' + ms);
+  pill($('pTime'), s.time.synced ? 'ok' : '', s.time.local ? s.time.local.slice(11, 16) : 'No time');
+  renderRelays();
+
+  kv($('wifiInfo'), [
+    ['Status', w.connected ? `Connected to ${w.ssid}` : (w.configured ? `Trying to connect to ${w.ssid}…` : 'Not configured')],
+    w.connected && ['IP address', w.ip],
+    w.connected && ['Signal', `${w.rssi} dBm`],
+    ['Address', code(`http://${s.hostname}.local/`)],
+    ['MAC', w.mac],
+    ['Setup access point', w.ap_active ? `${w.ap_ssid} (${w.ap_ip}), ${w.ap_clients} client(s)` : 'Off'],
+  ]);
+  kv($('timeInfo'), [
+    ['Local time', s.time.local || 'Not set yet'],
+    ['Synchronised', s.time.synced ? 'Yes' : 'Not yet'],
+  ]);
+  const y = s.system;
+  kv($('sysInfo'), [
+    ['Firmware', `${y.version} (built ${y.built})`],
+    ['ESP-IDF', y.idf],
+    ['Running from', y.partition + (y.pending_verify ? ' (new, not yet confirmed)' : '')],
+    ['Uptime', dur(y.uptime_s)],
+    ['Last reset', y.reset_reason],
+    ['Free memory', `${(y.free_heap/1024).toFixed(0)} KB (lowest ${(y.min_free_heap/1024).toFixed(0)} KB)`],
+  ]);
+}
+
+async function refresh(){
+  try { status = await api('/api/status'); renderStatus(); }
+  catch(e){ pill($('pWifi'), 'bad', 'Offline'); }
+}
+async function init(){
+  for (const [name, tz] of TZ){
+    const o = document.createElement('option'); o.value = tz; o.textContent = name; $('tzPreset').append(o);
+  }
+  buildRelays();
+  try { config = await api('/api/config'); fillConfig(); } catch(e){ toast(e.message, true); }
+  await refresh();
+  setInterval(() => { if (!document.hidden) refresh(); }, 3000);
+}
+init();
+</script>
+</body>
+</html>

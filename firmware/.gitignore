@@ -1,1 +1,6 @@
-/build
+# Build output and generated config (regenerate with `idf.py set-target esp32s3`)
+/build/
+/sdkconfig
+/sdkconfig.old
+# Downloaded by the IDF component manager (pinned in dependencies.lock)
+/managed_components/

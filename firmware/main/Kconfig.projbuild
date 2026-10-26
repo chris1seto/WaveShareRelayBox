@@ -1,0 +1,87 @@
+menu "Relay Box"
+
+    menu "Relays"
+        config RELAY_GPIO_1
+            int "Relay 1 GPIO"
+            default 1
+        config RELAY_GPIO_2
+            int "Relay 2 GPIO"
+            default 2
+        config RELAY_GPIO_3
+            int "Relay 3 GPIO"
+            default 41
+        config RELAY_GPIO_4
+            int "Relay 4 GPIO"
+            default 42
+        config RELAY_GPIO_5
+            int "Relay 5 GPIO"
+            default 45
+        config RELAY_GPIO_6
+            int "Relay 6 GPIO"
+            default 46
+
+        config RELAY_ACTIVE_LOW
+            bool "Relays are active-low (GPIO low = relay ON)"
+            default y
+            help
+                Matches the polarity used by firmware v1.x. Turn this off if
+                "ON" in the UI de-energises the relay on your board.
+
+        config RELAY_FIRST_BOOT_ON
+            bool "Relays start ON when no saved state exists"
+            default y
+            help
+                Used on first boot (or after a factory reset) when the power-on
+                behaviour is "restore last state" but nothing has been saved yet.
+                The default keeps the same GPIO level as firmware v1.x.
+    endmenu
+
+    menu "Network"
+        config APP_HOSTNAME_PREFIX
+            string "Default hostname prefix"
+            default "waveshare-relay"
+            help
+                The default hostname is this prefix plus the last three bytes
+                of the MAC address, e.g. waveshare-relay-a1b2c3. It can be
+                changed at runtime from the web UI.
+
+        config APP_AP_SSID_PREFIX
+            string "Setup access point SSID prefix"
+            default "WaveshareRelay"
+
+        config APP_AP_PASSWORD
+            string "Setup access point password"
+            default "waveshare"
+            help
+                At least 8 characters, or empty for an open access point.
+
+        config APP_AP_FALLBACK_DELAY_S
+            int "Seconds without Wi-Fi before the setup access point starts"
+            range 5 600
+            default 30
+
+        config APP_NTP_SERVER
+            string "Default NTP server"
+            default "pool.ntp.org"
+
+        config APP_TIMEZONE
+            string "Default POSIX timezone"
+            default "UTC0"
+            help
+                POSIX TZ string, e.g. "CET-1CEST,M3.5.0,M10.5.0/3" or
+                "PST8PDT,M3.2.0,M11.1.0".
+    endmenu
+
+    config APP_MQTT_DEFAULT_ROOT
+        string "Default MQTT root topic"
+        default "waveshare/relay"
+
+    config APP_FACTORY_RESET_GPIO
+        int "Factory reset button GPIO (-1 to disable)"
+        range -1 48
+        default 0
+        help
+            Hold this button (BOOT on the Waveshare board) for 5 seconds to
+            erase all settings and reboot into setup mode.
+
+endmenu
