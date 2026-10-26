@@ -78,6 +78,11 @@ esp_err_t ota_from_request(httpd_req_t *req, char *msg, size_t msg_len)
                    ESP_ERR_INVALID_SIZE);
         goto out;
     }
+    // The bootloader refuses a new update while the running image is unconfirmed.
+    // Being able to upload through our own web server shows it works, so confirm it.
+    if (ota_pending_verify()) {
+        ota_mark_valid();
+    }
     ESP_LOGI(TAG, "Receiving %u bytes into %s", (unsigned)total, target->label);
 
     while (received < total) {
@@ -102,7 +107,9 @@ esp_err_t ota_from_request(httpd_req_t *req, char *msg, size_t msg_len)
             }
             err = esp_ota_begin(target, OTA_WITH_SEQUENTIAL_WRITES, &handle);
             if (err != ESP_OK) {
-                fail(msg, msg_len, "esp_ota_begin failed", err);
+                fail(msg, msg_len, err == ESP_ERR_OTA_ROLLBACK_INVALID_STATE
+                                       ? "Current firmware not confirmed yet, try again in a minute"
+                                       : "esp_ota_begin failed", err);
                 goto out;
             }
             begun = true;

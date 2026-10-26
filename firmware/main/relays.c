@@ -20,7 +20,6 @@ static const gpio_num_t s_gpios[RELAY_COUNT] = {
 
 static SemaphoreHandle_t s_lock;
 static uint32_t s_mask;
-static relay_boot_mode_t s_boot_mode;
 static relays_listener_t s_listener;
 
 static inline int level_for(bool on)
@@ -39,34 +38,29 @@ static void drive(uint32_t mask)
     }
 }
 
-esp_err_t relays_init(relay_boot_mode_t boot_mode)
+esp_err_t relays_init(const relay_boot_mode_t boot_modes[RELAY_COUNT])
 {
     s_lock = xSemaphoreCreateMutex();
     if (!s_lock) {
         return ESP_ERR_NO_MEM;
     }
-    s_boot_mode = boot_mode;
 
-    uint32_t mask = 0;
-    switch (boot_mode) {
-    case RELAY_BOOT_ON:
-        mask = ALL_MASK;
-        break;
-    case RELAY_BOOT_OFF:
-        mask = 0;
-        break;
-    case RELAY_BOOT_RESTORE:
-    default:
-        if (settings_get_relay_mask(&mask) != ESP_OK) {
+    uint32_t saved;
+    if (settings_get_relay_mask(&saved) != ESP_OK) {
 #if CONFIG_RELAY_FIRST_BOOT_ON
-            mask = ALL_MASK;
+        saved = ALL_MASK;
 #else
-            mask = 0;
+        saved = 0;
 #endif
-        }
-        break;
     }
-    s_mask = mask & ALL_MASK;
+    uint32_t mask = 0;
+    for (int i = 0; i < RELAY_COUNT; i++) {
+        bool on = boot_modes[i] == RELAY_BOOT_ON ||
+                  (boot_modes[i] == RELAY_BOOT_RESTORE && (saved & (1u << i)));
+        mask |= (uint32_t)on << i;
+    }
+    s_mask = mask;
+    settings_set_relay_mask(s_mask);
 
     uint64_t pins = 0;
     for (int i = 0; i < RELAY_COUNT; i++) {
@@ -86,19 +80,8 @@ esp_err_t relays_init(relay_boot_mode_t boot_mode)
         return err;
     }
     drive(s_mask);
-    ESP_LOGI(TAG, "Initialised, boot mode %d, state 0x%02" PRIx32, boot_mode, s_mask);
+    ESP_LOGI(TAG, "Initialised, state 0x%02" PRIx32, s_mask);
     return ESP_OK;
-}
-
-void relays_set_boot_mode(relay_boot_mode_t boot_mode)
-{
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_boot_mode = boot_mode;
-    uint32_t mask = s_mask;
-    xSemaphoreGive(s_lock);
-    if (boot_mode == RELAY_BOOT_RESTORE) {
-        settings_set_relay_mask(mask);
-    }
 }
 
 esp_err_t relays_set_mask(uint32_t which, uint32_t values)
@@ -113,9 +96,7 @@ esp_err_t relays_set_mask(uint32_t which, uint32_t values)
     if (now != old) {
         s_mask = now;
         drive(now);
-        if (s_boot_mode == RELAY_BOOT_RESTORE) {
-            settings_set_relay_mask(now);
-        }
+        settings_set_relay_mask(now);   // skips the flash write if unchanged
     }
     relays_listener_t cb = s_listener;
     xSemaphoreGive(s_lock);
@@ -182,6 +163,27 @@ int relays_parse_payload(const char *s)
     return -1;
 }
 
+int relays_find(const char *tok)
+{
+    if (!tok || !tok[0]) {
+        return -1;
+    }
+    // All digits: an index. Ids always contain a letter, so this can't hide one.
+    char *end = NULL;
+    long idx = strtol(tok, &end, 10);
+    if (end != tok && *end == '\0') {
+        return (idx >= 0 && idx < RELAY_COUNT) ? (int)idx : -1;
+    }
+    device_settings_t ds;
+    settings_get(&ds);
+    for (int i = 0; i < RELAY_COUNT; i++) {
+        if (strcasecmp(tok, ds.relay_ids[i]) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 esp_err_t relays_apply_json(const cJSON *obj)
 {
     if (!cJSON_IsObject(obj)) {
@@ -191,9 +193,8 @@ esp_err_t relays_apply_json(const cJSON *obj)
     uint32_t which = 0, values = 0, toggles = 0;
     const cJSON *item;
     cJSON_ArrayForEach(item, obj) {
-        char *end = NULL;
-        long idx = strtol(item->string, &end, 10);
-        if (end == item->string || *end != '\0' || idx < 0 || idx >= RELAY_COUNT) {
+        int idx = relays_find(item->string);
+        if (idx < 0) {
             return ESP_ERR_INVALID_ARG;
         }
         int v;

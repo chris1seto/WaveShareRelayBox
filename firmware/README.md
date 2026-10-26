@@ -8,7 +8,7 @@ Firmware for the Waveshare ESP32-S3-Relay-6CH board, built on **ESP-IDF v6.1**.
 - **NTP** time sync with a configurable server and timezone
 - **MQTT**: JSON and per-relay topics, retained state, last-will availability, optional TLS, and **Home Assistant discovery**
 - **OTA updates** from the web UI or `curl`, with automatic rollback if the new image doesn't come up
-- Power-on behaviour: restore last state, all off or all on
+- Per-relay display name (with an ID generated from it) and power-on behaviour: restore last state, off or on
 - Optional admin password (HTTP Basic auth)
 - Factory reset from the web UI, or by holding **BOOT** for 5 seconds
 - Crash dumps saved to flash (`idf.py coredump-info`)
@@ -68,6 +68,8 @@ If the device loses Wi-Fi for 30 seconds, the setup access point comes back whil
 | POST | `/api/reboot` | |
 | POST | `/api/factory-reset` | erases all settings |
 
+Per-relay settings in `/api/config`: `relay_names` (6 display names) and `relay_boot` (6 × `off` / `on` / `restore`, or one string for all). Each relay's read-only `relay_ids` entry is generated from its name: it's lowercase; letters, digits, `_` and `-` are kept, spaces become `_`, everything else is dropped. Two relays can't end up with the same ID.
+
 `GET /status` and `POST /relay` from v1.x still work.
 
 Example:
@@ -78,16 +80,18 @@ curl -X POST -d '{"hostname":"garage-relays","timezone":"CET-1CEST,M3.5.0,M10.5.
 
 ## MQTT
 
-Relays are numbered 0-5. `<root>` defaults to `waveshare/relay`.
+A relay can be addressed by its index (0-5) or by its ID, e.g. `relay/2/set` or `relay/garage_door/set`. IDs are matched case-insensitively and always contain a letter, so they can't be mistaken for an index. `<root>` defaults to `waveshare/relay`.
 
 | Topic | Direction | Payload |
 |---|---|---|
-| `<root>/set` | → device | `{"0": true, "1": false, "2": "toggle"}` |
-| `<root>/relay/<n>/set` | → device | `ON`, `OFF` or `TOGGLE` |
-| `<root>/status` | ← retained | `{"0": true, ...}` |
-| `<root>/relay/<n>/state` | ← retained | `ON` / `OFF` |
+| `<root>/set` | → device | `{"0": true, "garage_door": false, "2": "toggle"}` |
+| `<root>/relay/<index or id>/set` | → device | `ON`, `OFF` or `TOGGLE` |
+| `<root>/status` | ← retained | `{"0": true, ...}` (by index) |
+| `<root>/relay/<index or id>/state` | ← retained | `ON` / `OFF`, published under both |
 | `<root>/availability` | ← retained | `online` / `offline` (last will) |
-| `<root>/info` | ← retained | hostname, IP, firmware version |
+| `<root>/info` | ← retained | hostname, IP, firmware version, relay index/id/name list |
+
+Renaming a relay clears the retained state under its old ID.
 
 The broker field takes a plain host (with the port field), or a full URI such as `mqtts://broker.example.com:8883`. TLS connections are checked against the built-in CA bundle. With Home Assistant discovery on, each relay appears as a switch under one device.
 

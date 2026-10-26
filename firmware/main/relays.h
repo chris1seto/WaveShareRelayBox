@@ -10,11 +10,11 @@ struct cJSON;
 /** Called after any relay changes, from the task that made the change. */
 typedef void (*relays_listener_t)(uint32_t old_mask, uint32_t new_mask);
 
-/** Configure GPIOs and apply the power-on state. */
-esp_err_t relays_init(relay_boot_mode_t boot_mode);
-
-/** Change the power-on behaviour at runtime. */
-void relays_set_boot_mode(relay_boot_mode_t boot_mode);
+/**
+ * Configure GPIOs and apply each relay's power-on mode. The current state is saved
+ * whenever it changes, so RELAY_BOOT_RESTORE always has the last state to go back to.
+ */
+esp_err_t relays_init(const relay_boot_mode_t boot_modes[RELAY_COUNT]);
 
 esp_err_t relays_set(int idx, bool on);
 esp_err_t relays_toggle(int idx);
@@ -28,8 +28,14 @@ uint32_t relays_get_mask(void);
 void relays_set_listener(relays_listener_t cb);
 
 /**
- * Apply a JSON command. Accepts an object whose keys are relay indexes ("0".."5")
- * and whose values are true/false, "on"/"off" or "toggle". Unknown keys are an error.
+ * Look up a relay by numeric index ("0".."5") or by its id (case-insensitive).
+ * Returns the index, or -1 if nothing matches.
+ */
+int relays_find(const char *index_or_id);
+
+/**
+ * Apply a JSON command. Keys are relay indexes ("0".."5") or relay ids; values are
+ * true/false, 1/0, "on"/"off" or "toggle". Unknown keys are an error.
  */
 esp_err_t relays_apply_json(const struct cJSON *obj);
 

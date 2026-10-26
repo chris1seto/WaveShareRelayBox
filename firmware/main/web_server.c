@@ -184,6 +184,15 @@ static const char *boot_mode_str(relay_boot_mode_t m)
     }
 }
 
+static int parse_boot_mode(const char *v)
+{
+    if (!v) return -1;
+    if (!strcmp(v, "off")) return RELAY_BOOT_OFF;
+    if (!strcmp(v, "on")) return RELAY_BOOT_ON;
+    if (!strcmp(v, "restore")) return RELAY_BOOT_RESTORE;
+    return -1;
+}
+
 static const char *reset_reason_str(void)
 {
     switch (esp_reset_reason()) {
@@ -220,9 +229,11 @@ static cJSON *build_status(void)
         bool on = mask & (1u << i);
         cJSON_AddBoolToObject(relays, key, on);
         cJSON *r = cJSON_CreateObject();
-        cJSON_AddNumberToObject(r, "id", i);
+        cJSON_AddNumberToObject(r, "index", i);
+        cJSON_AddStringToObject(r, "id", ds.relay_ids[i]);
         cJSON_AddStringToObject(r, "name", ds.relay_names[i]);
         cJSON_AddBoolToObject(r, "on", on);
+        cJSON_AddStringToObject(r, "power_on", boot_mode_str(ds.relay_boot[i]));
         cJSON_AddItemToArray(list, r);
     }
 
@@ -280,12 +291,17 @@ static cJSON *build_config(void)
     cJSON_AddStringToObject(root, "hostname", ds.hostname);
     cJSON_AddStringToObject(root, "ntp_server", ds.ntp_server);
     cJSON_AddStringToObject(root, "timezone", ds.timezone);
-    cJSON_AddStringToObject(root, "relay_boot", boot_mode_str(ds.relay_boot));
     cJSON_AddBoolToObject(root, "admin_password_set", ds.admin_password[0] != '\0');
     cJSON_AddStringToObject(root, "wifi_ssid", ws.sta_ssid);
     cJSON *names = cJSON_AddArrayToObject(root, "relay_names");
     for (int i = 0; i < RELAY_COUNT; i++) {
         cJSON_AddItemToArray(names, cJSON_CreateString(ds.relay_names[i]));
+    }
+    cJSON *ids = cJSON_AddArrayToObject(root, "relay_ids");
+    cJSON *boot = cJSON_AddArrayToObject(root, "relay_boot");
+    for (int i = 0; i < RELAY_COUNT; i++) {
+        cJSON_AddItemToArray(ids, cJSON_CreateString(ds.relay_ids[i]));
+        cJSON_AddItemToArray(boot, cJSON_CreateString(boot_mode_str(ds.relay_boot[i])));
     }
     cJSON *m = cJSON_AddObjectToObject(root, "mqtt");
     cJSON_AddBoolToObject(m, "enabled", ds.mqtt.enabled);
@@ -346,15 +362,25 @@ static bool parse_config(const cJSON *body, device_settings_t *s, const char **b
         return false;
     }
 
+    // relay_boot: one mode per relay, or a single string applied to all of them.
     const cJSON *boot = cJSON_GetObjectItemCaseSensitive(body, "relay_boot");
     if (boot) {
-        const char *v = cJSON_GetStringValue(boot);
-        if (v && !strcmp(v, "off")) s->relay_boot = RELAY_BOOT_OFF;
-        else if (v && !strcmp(v, "on")) s->relay_boot = RELAY_BOOT_ON;
-        else if (v && !strcmp(v, "restore")) s->relay_boot = RELAY_BOOT_RESTORE;
-        else { *bad = "relay_boot"; return false; }
+        bool all = cJSON_IsString(boot);
+        if (!all && (!cJSON_IsArray(boot) || cJSON_GetArraySize(boot) != RELAY_COUNT)) {
+            *bad = "relay_boot";
+            return false;
+        }
+        for (int i = 0; i < RELAY_COUNT; i++) {
+            int m = parse_boot_mode(cJSON_GetStringValue(all ? boot : cJSON_GetArrayItem(boot, i)));
+            if (m < 0) {
+                *bad = "relay_boot (use off, on or restore)";
+                return false;
+            }
+            s->relay_boot[i] = (relay_boot_mode_t)m;
+        }
     }
 
+    // The relay id is derived from the name, so it is checked here rather than set.
     const cJSON *names = cJSON_GetObjectItemCaseSensitive(body, "relay_names");
     if (names) {
         if (!cJSON_IsArray(names) || cJSON_GetArraySize(names) != RELAY_COUNT) {
@@ -363,11 +389,29 @@ static bool parse_config(const cJSON *body, device_settings_t *s, const char **b
         }
         for (int i = 0; i < RELAY_COUNT; i++) {
             const char *n = cJSON_GetStringValue(cJSON_GetArrayItem(names, i));
-            if (!n || !n[0] || strlen(n) >= SETTINGS_NAME_LEN) {
-                *bad = "relay_names";
+            if (!n || strlen(n) >= SETTINGS_NAME_LEN) {
+                *bad = "relay name (up to 24 characters)";
                 return false;
             }
             strlcpy(s->relay_names[i], n, SETTINGS_NAME_LEN);
+            settings_relay_id_from_name(s->relay_names[i], s->relay_ids[i]);
+            // Ids need a letter so MQTT can't confuse them with a numeric index.
+            if (!strpbrk(s->relay_ids[i], "abcdefghijklmnopqrstuvwxyz")) {
+                *bad = "relay name (needs at least one letter)";
+                return false;
+            }
+        }
+        for (int i = 0; i < RELAY_COUNT; i++) {
+            for (int j = i + 1; j < RELAY_COUNT; j++) {
+                if (strcmp(s->relay_ids[i], s->relay_ids[j]) == 0) {
+                    // Only the HTTP server task runs this, so a static buffer is safe.
+                    static char msg[96];
+                    snprintf(msg, sizeof(msg), "relay name: relays %d and %d would both get the id \"%s\"",
+                             i + 1, j + 1, s->relay_ids[i]);
+                    *bad = msg;
+                    return false;
+                }
+            }
         }
     }
 
@@ -440,7 +484,7 @@ static esp_err_t h_config_post(httpd_req_t *req)
     bool ok = parse_config(body, &s, &bad);
     cJSON_Delete(body);
     if (!ok) {
-        char msg[96];
+        char msg[160];
         snprintf(msg, sizeof(msg), "Invalid %s", bad ? bad : "value");
         return send_error(req, "400 Bad Request", msg);
     }
@@ -457,9 +501,6 @@ static esp_err_t h_config_post(httpd_req_t *req)
     }
     if (strcmp(old.ntp_server, s.ntp_server) || strcmp(old.timezone, s.timezone)) {
         net_services_set_time_config(s.ntp_server, s.timezone);
-    }
-    if (old.relay_boot != s.relay_boot) {
-        relays_set_boot_mode(s.relay_boot);
     }
     if (host_changed || memcmp(&old.mqtt, &s.mqtt, sizeof(s.mqtt)) ||
         memcmp(old.relay_names, s.relay_names, sizeof(s.relay_names))) {

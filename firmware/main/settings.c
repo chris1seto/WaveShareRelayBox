@@ -61,6 +61,26 @@ bool settings_hostname_valid(const char *h)
     return true;
 }
 
+void settings_relay_id_from_name(const char *name, char out[SETTINGS_ID_LEN])
+{
+    const size_t max = SETTINGS_ID_LEN - 1;
+    size_t n = 0;
+    bool space = false;
+    for (const char *p = name ? name : ""; *p && n < max; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x80 && (isalnum(c) || c == '_' || c == '-')) {
+            if (space && n > 0 && n + 2 <= max) {
+                out[n++] = '_';
+            }
+            space = false;
+            out[n++] = (char)tolower(c);
+        } else if (c < 0x80 && isspace(c)) {
+            space = true;
+        }
+    }
+    out[n] = '\0';
+}
+
 const char *settings_device_id(void)
 {
     return s_device_id;
@@ -72,8 +92,8 @@ static void set_defaults(device_settings_t *s)
     snprintf(s->hostname, sizeof(s->hostname), "%.25s-%s", CONFIG_APP_HOSTNAME_PREFIX, s_device_id);
     copy_str(s->ntp_server, sizeof(s->ntp_server), CONFIG_APP_NTP_SERVER);
     copy_str(s->timezone, sizeof(s->timezone), CONFIG_APP_TIMEZONE);
-    s->relay_boot = RELAY_BOOT_RESTORE;
     for (int i = 0; i < RELAY_COUNT; i++) {
+        s->relay_boot[i] = RELAY_BOOT_RESTORE;
         snprintf(s->relay_names[i], SETTINGS_NAME_LEN, "Relay %d", i + 1);
     }
     s->mqtt.enabled = false;
@@ -138,14 +158,21 @@ static void load_all(device_settings_t *s)
         nvs_read_str(h, "ntp", s->ntp_server, sizeof(s->ntp_server));
         nvs_read_str(h, "tz", s->timezone, sizeof(s->timezone));
         nvs_read_str(h, "admin_pw", s->admin_password, sizeof(s->admin_password));
+        // One "relay_boot" for all relays was used before per-relay settings existed.
         uint8_t boot = 0;
         if (nvs_get_u8(h, "relay_boot", &boot) == ESP_OK && boot <= RELAY_BOOT_RESTORE) {
-            s->relay_boot = (relay_boot_mode_t)boot;
+            for (int i = 0; i < RELAY_COUNT; i++) {
+                s->relay_boot[i] = (relay_boot_mode_t)boot;
+            }
         }
         for (int i = 0; i < RELAY_COUNT; i++) {
             char key[8];
             snprintf(key, sizeof(key), "rname%d", i);
             nvs_read_str(h, key, s->relay_names[i], SETTINGS_NAME_LEN);
+            snprintf(key, sizeof(key), "rboot%d", i);
+            if (nvs_get_u8(h, key, &boot) == ESP_OK && boot <= RELAY_BOOT_RESTORE) {
+                s->relay_boot[i] = (relay_boot_mode_t)boot;
+            }
         }
         nvs_close(h);
     }
@@ -181,6 +208,9 @@ static void load_all(device_settings_t *s)
         device_settings_t d;
         set_defaults(&d);
         copy_str(s->hostname, sizeof(s->hostname), d.hostname);
+    }
+    for (int i = 0; i < RELAY_COUNT; i++) {
+        settings_relay_id_from_name(s->relay_names[i], s->relay_ids[i]);
     }
     normalize_topic(s->mqtt.root_topic);
     if (!s->mqtt.root_topic[0]) {
@@ -218,11 +248,18 @@ void settings_get(device_settings_t *out)
 
 esp_err_t settings_save(const device_settings_t *in)
 {
-    if (!settings_hostname_valid(in->hostname) || in->relay_boot > RELAY_BOOT_RESTORE ||
-        in->mqtt.port == 0) {
+    if (!settings_hostname_valid(in->hostname) || in->mqtt.port == 0) {
         return ESP_ERR_INVALID_ARG;
     }
+    for (int i = 0; i < RELAY_COUNT; i++) {
+        if (in->relay_boot[i] > RELAY_BOOT_RESTORE) {
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
     device_settings_t s = *in;
+    for (int i = 0; i < RELAY_COUNT; i++) {
+        settings_relay_id_from_name(s.relay_names[i], s.relay_ids[i]);
+    }
     normalize_topic(s.mqtt.root_topic);
     if (!s.mqtt.root_topic[0]) {
         return ESP_ERR_INVALID_ARG;
@@ -237,11 +274,12 @@ esp_err_t settings_save(const device_settings_t *in)
     CHECK(nvs_set_str(h, "ntp", s.ntp_server));
     CHECK(nvs_set_str(h, "tz", s.timezone));
     CHECK(nvs_set_str(h, "admin_pw", s.admin_password));
-    CHECK(nvs_set_u8(h, "relay_boot", (uint8_t)s.relay_boot));
     for (int i = 0; i < RELAY_COUNT; i++) {
         char key[8];
         snprintf(key, sizeof(key), "rname%d", i);
         CHECK(nvs_set_str(h, key, s.relay_names[i]));
+        snprintf(key, sizeof(key), "rboot%d", i);
+        CHECK(nvs_set_u8(h, key, (uint8_t)s.relay_boot[i]));
     }
     CHECK(nvs_commit(h));
     nvs_close(h);

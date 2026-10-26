@@ -31,6 +31,7 @@ static volatile mqtt_link_state_t s_state = MQTT_LINK_DISABLED;
 static mqtt_settings_t s_cfg;
 static char s_hostname[SETTINGS_HOSTNAME_LEN];
 static char s_names[RELAY_COUNT][SETTINGS_NAME_LEN];
+static char s_ids[RELAY_COUNT][SETTINGS_ID_LEN];
 static char s_uri[128];
 static char s_lwt_topic[96];
 
@@ -56,11 +57,15 @@ static void publish_state(void)
     uint32_t mask = relays_get_mask();
     cJSON *obj = cJSON_CreateObject();
     for (int i = 0; i < RELAY_COUNT; i++) {
-        char key[4], sub[24];
+        char key[4], sub[48];
+        const char *v = (mask & (1u << i)) ? "ON" : "OFF";
         snprintf(key, sizeof(key), "%d", i);
         cJSON_AddBoolToObject(obj, key, mask & (1u << i));
+        // Same state under the index and the id, so either can be subscribed to.
         snprintf(sub, sizeof(sub), "relay/%d/state", i);
-        publish(sub, (mask & (1u << i)) ? "ON" : "OFF", true);
+        publish(sub, v, true);
+        snprintf(sub, sizeof(sub), "relay/%.24s/state", s_ids[i]);
+        publish(sub, v, true);
     }
     char *json = cJSON_PrintUnformatted(obj);
     if (json) {
@@ -78,6 +83,14 @@ static void publish_info(void)
     cJSON_AddStringToObject(o, "hostname", s_hostname);
     cJSON_AddStringToObject(o, "ip", ws.sta_ip);
     cJSON_AddStringToObject(o, "version", esp_app_get_description()->version);
+    cJSON *list = cJSON_AddArrayToObject(o, "relays");
+    for (int i = 0; i < RELAY_COUNT; i++) {
+        cJSON *r = cJSON_CreateObject();
+        cJSON_AddNumberToObject(r, "index", i);
+        cJSON_AddStringToObject(r, "id", s_ids[i]);
+        cJSON_AddStringToObject(r, "name", s_names[i]);
+        cJSON_AddItemToArray(list, r);
+    }
     char *json = cJSON_PrintUnformatted(o);
     if (json) {
         publish("info", json, true);
@@ -156,22 +169,31 @@ static void handle_message(const char *topic, int topic_len, const char *data, i
         cJSON *obj = cJSON_Parse(payload);
         if (relays_apply_json(obj) != ESP_OK) {
             ESP_LOGW(TAG, "Bad command on %.*s: %s", topic_len, topic, payload);
+        } else {
+            ESP_LOGI(TAG, "set: %s", payload);
         }
         cJSON_Delete(obj);
         return;
     }
 
-    // relay/<n>/set
-    int idx;
-    char tail[8];
-    char sub[32];
-    if (rest_len >= (int)sizeof(sub)) {
+    // relay/<index or id>/set
+    static const char prefix[] = "relay/", suffix[] = "/set";
+    const int pre = sizeof(prefix) - 1, suf = sizeof(suffix) - 1;
+    int tok_len = rest_len - pre - suf;
+    if (tok_len <= 0 || tok_len >= SETTINGS_ID_LEN || memcmp(rest, prefix, pre) != 0 ||
+        memcmp(rest + rest_len - suf, suffix, suf) != 0) {
         return;
     }
-    memcpy(sub, rest, rest_len);
-    sub[rest_len] = '\0';
-    if (sscanf(sub, "relay/%d/%7s", &idx, tail) == 2 && strcmp(tail, "set") == 0 &&
-        idx >= 0 && idx < RELAY_COUNT) {
+    char tok[SETTINGS_ID_LEN];
+    memcpy(tok, rest + pre, tok_len);
+    tok[tok_len] = '\0';
+    int idx = relays_find(tok);
+    if (idx < 0) {
+        ESP_LOGW(TAG, "No relay '%s'", tok);
+        return;
+    }
+    {
+        ESP_LOGI(TAG, "relay/%s/set -> relay %d: %s", tok, idx, payload);
         int v = relays_parse_payload(payload);
         if (v == 2) {
             relays_toggle(idx);
@@ -245,6 +267,7 @@ static void client_start(void)
     s_cfg = ds.mqtt;
     strlcpy(s_hostname, ds.hostname, sizeof(s_hostname));
     memcpy(s_names, ds.relay_names, sizeof(s_names));
+    memcpy(s_ids, ds.relay_ids, sizeof(s_ids));
 
     if (!s_cfg.enabled || !s_cfg.host[0]) {
         ESP_LOGI(TAG, "Disabled");
@@ -292,6 +315,32 @@ static void client_start(void)
     ESP_LOGI(TAG, "Connecting to %s as '%s', root topic '%s'", s_uri, s_hostname, s_cfg.root_topic);
 }
 
+// A renamed relay leaves a retained state message under its old id; clear it.
+static void clear_renamed_ids(void)
+{
+    if (!s_client || s_state != MQTT_LINK_CONNECTED) {
+        return;
+    }
+    device_settings_t ds;
+    settings_get(&ds);
+    if (strcmp(ds.mqtt.root_topic, s_cfg.root_topic) != 0) {
+        return;   // topics are moving anyway
+    }
+    for (int i = 0; i < RELAY_COUNT; i++) {
+        bool still_used = false;
+        for (int j = 0; j < RELAY_COUNT; j++) {
+            still_used |= strcmp(s_ids[i], ds.relay_ids[j]) == 0;
+        }
+        if (!still_used) {
+            char topic[160];
+            snprintf(topic, sizeof(topic), "%.63s/relay/%.24s/state", s_cfg.root_topic, s_ids[i]);
+            // An empty retained message deletes the retained one on the broker.
+            esp_mqtt_client_publish(s_client, topic, "", 0, 1, 1);
+            ESP_LOGI(TAG, "Cleared %s", topic);
+        }
+    }
+}
+
 static void worker(void *arg)
 {
     client_start();
@@ -302,6 +351,7 @@ static void worker(void *arg)
         }
         switch (cmd) {
         case CMD_RELOAD:
+            clear_renamed_ids();
             client_stop();
             client_start();
             break;

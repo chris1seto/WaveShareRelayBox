@@ -15,6 +15,7 @@
   --accent:#4f8cff;--off:#3a404c;--input:#14171c;--shadow:none;
 }}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 header{background:var(--card);border-bottom:1px solid var(--line)}
 .bar{max-width:880px;margin:0 auto;padding:14px 16px;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
@@ -31,10 +32,24 @@ section{display:none} section.active{display:block}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px;box-shadow:var(--shadow)}
 .card h2{font-size:15px;margin:0 0 12px}
 .hint{color:var(--muted);font-size:13px;margin:4px 0 0}
-.relays{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
-.relay{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border:1px solid var(--line);border-radius:8px}
-.relay .name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.relay .sub{color:var(--muted);font-size:12px}
+.relay-head{display:flex;align-items:center;gap:16px}
+.relay-head .divider{width:1px;align-self:stretch;min-height:40px;background:var(--line);flex:none}
+.relay-title{min-width:0;flex:1}
+.menu-btn{flex:none;width:36px;height:36px;display:grid;place-items:center;border:1px solid transparent;border-radius:6px;background:none;color:var(--muted);cursor:pointer}
+.menu-btn:hover{border-color:var(--line);color:var(--text);background:var(--bg)}
+.menu-btn svg{width:18px;height:18px}
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--text);padding:20px;width:min(420px,calc(100% - 32px));box-shadow:0 10px 40px rgba(0,0,0,.25)}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+dialog h2{font-size:16px;margin:0}
+dialog .actions{justify-content:flex-end}
+.relay-title .name{display:inline-flex;align-items:center;gap:6px;max-width:100%;font-family:inherit;font-weight:600;font-size:16px;line-height:1.3;color:var(--text);background:none;border:0;border-radius:4px;padding:2px 4px;margin:-2px -4px;cursor:text;text-align:left}
+.relay-title .name span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.relay-title .name::after{content:"✎";font-weight:400;font-size:13px;color:var(--muted);opacity:0;transition:opacity .15s}
+.relay-title .name:hover{background:var(--bg)}
+.relay-title .name:hover::after,.relay-title .name:focus-visible::after{opacity:1}
+.relay-title input.name-edit{font-family:inherit;font-weight:600;font-size:16px;line-height:1.3;padding:1px 6px;margin:-2px -7px;width:min(100%,320px)}
+.relay-title .meta{display:flex;gap:8px;align-items:center;margin-top:4px;color:var(--muted);font-size:13px;flex-wrap:wrap}
+.relay-err{color:var(--bad);font-size:13px;margin-top:8px}
 .switch{position:relative;width:48px;height:28px;flex:none}
 .switch input{opacity:0;width:0;height:0;position:absolute}
 .switch span{position:absolute;inset:0;background:var(--off);border-radius:99px;transition:.15s;cursor:pointer}
@@ -94,31 +109,16 @@ body.busy main,body.busy nav{opacity:.55;pointer-events:none;transition:opacity 
 
 <main>
 <!-- Relays -->
-<section id="relays" class="active">
-  <div class="card">
-    <div class="relays" id="relayList"></div>
-    <div class="actions">
-      <button class="btn" onclick="setAll(true)">All on</button>
-      <button class="btn" onclick="setAll(false)">All off</button>
-    </div>
+<section id="tab-relays" class="active">
+  <div class="actions" style="margin:0 0 16px">
+    <button class="btn" onclick="setAll(true)">All on</button>
+    <button class="btn" onclick="setAll(false)">All off</button>
   </div>
-  <div class="card">
-    <h2>Relay settings</h2>
-    <div class="grid" id="nameFields"></div>
-    <div style="margin-top:12px">
-      <label for="relayBoot">After power loss</label>
-      <select id="relayBoot">
-        <option value="restore">Restore last state</option>
-        <option value="off">All off</option>
-        <option value="on">All on</option>
-      </select>
-    </div>
-    <div class="actions"><button class="btn primary" onclick="saveRelaySettings(this)">Save</button></div>
-  </div>
+  <div id="relayList"></div>
 </section>
 
 <!-- Network -->
-<section id="network">
+<section id="tab-network">
   <div class="card">
     <h2>Wi-Fi</h2>
     <table class="kv" id="wifiInfo"></table>
@@ -163,7 +163,7 @@ body.busy main,body.busy nav{opacity:.55;pointer-events:none;transition:opacity 
 </section>
 
 <!-- MQTT -->
-<section id="mqtt">
+<section id="tab-mqtt">
   <div class="card">
     <h2>Broker</h2>
     <label class="check"><input type="checkbox" id="mqEnabled"> Enable MQTT</label>
@@ -187,7 +187,7 @@ body.busy main,body.busy nav{opacity:.55;pointer-events:none;transition:opacity 
 </section>
 
 <!-- System -->
-<section id="system">
+<section id="tab-system">
   <div class="card">
     <h2>Device</h2>
     <table class="kv" id="sysInfo"></table>
@@ -223,6 +223,16 @@ body.busy main,body.busy nav{opacity:.55;pointer-events:none;transition:opacity 
   </div>
 </section>
 </main>
+<dialog id="relayDlg" aria-labelledby="dlgTitle">
+  <h2 id="dlgTitle"></h2>
+  <p class="hint" id="dlgSub" style="margin:2px 0 16px"></p>
+  <label for="dlgBoot">After power loss</label>
+  <select id="dlgBoot"></select>
+  <div class="actions">
+    <button type="button" class="btn" id="dlgCancel">Cancel</button>
+    <button type="button" class="btn primary" id="dlgSave">Save</button>
+  </div>
+</dialog>
 <div id="toast"></div>
 
 <script>
@@ -304,7 +314,7 @@ function pill(el, cls, text){ el.className = 'pill ' + cls; el.textContent = tex
 // ---------- tabs
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('active', x === b));
-  document.querySelectorAll('section').forEach(s => s.classList.toggle('active', s.id === b.dataset.tab));
+  document.querySelectorAll('section').forEach(s => s.classList.toggle('active', s.id === 'tab-' + b.dataset.tab));
   try { localStorage.setItem('tab', b.dataset.tab); } catch(e) {}
 });
 {
@@ -314,24 +324,135 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
 }
 
 // ---------- relays
-function buildRelays(){
-  const list = $('relayList'), names = $('nameFields');
-  for (let i = 0; i < RELAYS; i++){
-    const row = document.createElement('div'); row.className = 'relay';
-    row.innerHTML = `<div style="min-width:0"><div class="name"></div><div class="sub">Channel ${i+1} · MQTT id ${i}</div></div>
-      <label class="switch"><input type="checkbox" aria-label="Relay ${i+1}"><span></span></label>`;
-    row.querySelector('input').onchange = e => setRelay(i, e.target.checked, e.target);
-    list.append(row);
-    const f = document.createElement('div');
-    f.innerHTML = `<label for="rn${i}">Channel ${i+1} name</label><input id="rn${i}" type="text" maxlength="24">`;
-    names.append(f);
+const BOOT_LABELS = {restore: 'Restore last state', off: 'Turn off', on: 'Turn on'};
+// Must match settings_relay_id_from_name() in the firmware: keep letters (lowercased), 0-9, _ and -,
+// turn runs of whitespace into one '_', drop everything else, max 24 characters.
+function relayId(name){
+  let out = '', space = false;
+  for (const c of name){
+    if (out.length >= 24) break;
+    if (/[A-Za-z0-9_-]/.test(c)){
+      if (space && out.length && out.length + 2 <= 24) out += '_';
+      space = false; out += c.toLowerCase();
+    } else if (/\s/.test(c)) space = true;
   }
+  return out;
+}
+const MENU_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>';
+function buildRelays(){
+  const list = $('relayList');
+  $('dlgBoot').innerHTML = Object.entries(BOOT_LABELS).map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+  for (let i = 0; i < RELAYS; i++){
+    const card = document.createElement('div'); card.className = 'card'; card.id = 'relay' + i;
+    card.innerHTML = `
+      <div class="relay-head">
+        <label class="switch"><input type="checkbox" class="toggle"><span></span></label>
+        <div class="divider"></div>
+        <div class="relay-title">
+          <button type="button" class="name" title="Click to rename"><span></span></button>
+          <input id="rn${i}" class="name-edit" type="text" maxlength="24" autocomplete="off" hidden>
+          <div class="meta"><span>Channel ${i+1}</span><code class="rid"></code></div>
+          <div class="relay-err" hidden></div>
+        </div>
+        <button type="button" class="menu-btn" title="Options">${MENU_ICON}</button>
+      </div>`;
+    const cb = card.querySelector('.toggle');
+    cb.setAttribute('aria-label', `Relay ${i+1}`);
+    cb.onchange = e => setRelay(i, e.target.checked, e.target);
+    card.querySelector('.name').onclick = () => startRename(i);
+    card.querySelector('.menu-btn').setAttribute('aria-label', `Relay ${i+1} options`);
+    card.querySelector('.menu-btn').onclick = () => openOptions(i);
+    const input = card.querySelector('#rn'+i);
+    input.addEventListener('input', () => previewId(i));
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter'){ e.preventDefault(); input.blur(); }
+      else if (e.key === 'Escape'){ input.dataset.cancel = '1'; input.blur(); }
+    });
+    input.addEventListener('blur', () => finishRename(i));
+    list.append(card);
+  }
+  const dlg = $('relayDlg');
+  $('dlgCancel').onclick = () => dlg.close();
+  $('dlgSave').onclick = saveOptions;
+  // Clicking the dimmed backdrop closes the dialog.
+  dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
+}
+let dlgRelay = -1;
+function openOptions(i){
+  dlgRelay = i;
+  $('dlgTitle').textContent = config.relay_names[i];
+  $('dlgSub').textContent = `Channel ${i+1} · ${config.relay_ids[i]}`;
+  $('dlgBoot').value = config.relay_boot[i];
+  $('relayDlg').showModal();
+}
+async function saveOptions(){
+  const i = dlgRelay, btns = [$('dlgSave'), $('dlgCancel'), $('dlgBoot')];
+  btns.forEach(b => b.disabled = true);
+  $('dlgSave').textContent = 'Saving…';
+  try {
+    const boot = [...config.relay_boot]; boot[i] = $('dlgBoot').value;
+    config = await api('/api/config', {json: {relay_boot: boot}});
+    $('relayDlg').close();
+    toast(`${config.relay_names[i]}: options saved`);
+  } catch(e){ toast(e.message, true); }
+  finally { btns.forEach(b => b.disabled = false); $('dlgSave').textContent = 'Save'; }
+}
+const editing = new Set();
+function startRename(i){
+  const card = $('relay'+i), input = $('rn'+i);
+  editing.add(i);
+  input.value = config.relay_names[i];
+  input.dataset.cancel = '';
+  card.querySelector('.name').hidden = true;
+  input.hidden = false;
+  input.focus(); input.select();
+  previewId(i);
+}
+function endRename(i){
+  const card = $('relay'+i);
+  editing.delete(i);
+  $('rn'+i).hidden = true;
+  card.querySelector('.name').hidden = false;
+  card.querySelector('.relay-err').hidden = true;
+  card.querySelector('.rid').textContent = config.relay_ids[i];
+}
+async function finishRename(i){
+  const input = $('rn'+i), name = input.value.trim();
+  if (!editing.has(i) || input.dataset.saving) return;
+  if (input.dataset.cancel || name === config.relay_names[i]) return endRename(i);
+  const problem = idProblem(i);
+  if (problem){ toast(problem, true); input.focus(); return; }
+  input.dataset.saving = '1';
+  await withBusy(null, async () => {
+    const names = [...config.relay_names]; names[i] = name;
+    config = await api('/api/config', {json: {relay_names: names}});
+    endRename(i);
+    renderTopics();
+    toast(`Renamed to ${name}`);
+    await refresh();
+  });
+  delete input.dataset.saving;
+  if (editing.has(i)) input.focus();   // save failed: keep editing
+}
+// Problem with relay i's pending name, or '' if it's fine.
+function idProblem(i){
+  const name = $('rn'+i).value.trim(), id = relayId(name);
+  if (!/[a-z]/.test(id)) return 'The name needs at least one letter';
+  const ids = config.relay_ids.map((x, j) => j === i ? id : x);
+  const other = ids.findIndex((x, j) => j !== i && x === id);
+  return other >= 0 ? `Relay ${other+1} already uses the ID "${id}"` : '';
+}
+function previewId(i){
+  $('relay'+i).querySelector('.rid').textContent = relayId($('rn'+i).value.trim()) || '—';
+  const err = $('relay'+i).querySelector('.relay-err'), p = idProblem(i);
+  err.textContent = p; err.hidden = !p;
 }
 function renderRelays(){
-  const rows = $('relayList').children;
   status.relay_list.forEach((r, i) => {
-    rows[i].querySelector('.name').textContent = r.name;
-    const cb = rows[i].querySelector('input');
+    const card = $('relay' + i);
+    card.querySelector('.name span').textContent = r.name;
+    if (!editing.has(i)) card.querySelector('.rid').textContent = r.id;
+    const cb = card.querySelector('.toggle');
     if (!busy.has(i)) cb.checked = r.on;
   });
 }
@@ -345,17 +466,8 @@ async function setAll(on){
   const body = {}; for (let i = 0; i < RELAYS; i++) body[i] = on;
   try { status = await api('/api/relays', {json: body}); renderRelays(); } catch(e){ toast(e.message, true); }
 }
-function saveRelaySettings(btn){
-  withBusy(btn, async () => {
-    const names = [];
-    for (let i = 0; i < RELAYS; i++){
-      const v = $('rn'+i).value.trim();
-      if (!v) throw new Error(`Channel ${i+1} needs a name`);
-      names.push(v);
-    }
-    config = await api('/api/config', {json: {relay_names: names, relay_boot: $('relayBoot').value}});
-    toast('Relay settings saved'); refresh();
-  });
+function fillRelayFields(i){
+  if (!editing.has(i)) $('relay'+i).querySelector('.rid').textContent = config.relay_ids[i];
 }
 
 // ---------- network
@@ -443,10 +555,11 @@ function clearMqttPass(btn){
 function renderTopics(){
   const r = (config && config.mqtt.root_topic) || 'waveshare/relay';
   kv($('topics'), [
-    ['Command (JSON)', code(`${r}/set  {"0":true,"3":"toggle"}`)],
-    ['Command (one relay)', code(`${r}/relay/<0-5>/set  ON | OFF | TOGGLE`)],
+    ['Command (JSON)', code(`${r}/set  {"0":true,"${(config && config.relay_ids[3]) || 'relay_4'}":"toggle"}`)],
+    ['Command (one relay)', code(`${r}/relay/<index or id>/set  ON | OFF | TOGGLE`)],
     ['State (JSON)', code(`${r}/status`)],
-    ['State (one relay)', code(`${r}/relay/<0-5>/state`)],
+    ['State (one relay)', code(`${r}/relay/<index or id>/state`)],
+    ['Relay ids', code((config ? config.relay_ids : []).map((id, i) => `${i} = ${id}`).join(', '))],
     ['Availability', code(`${r}/availability  online | offline`)],
     ['Device info', code(`${r}/info`)],
   ]);
@@ -512,8 +625,7 @@ function fillConfig(){
   $('tzPreset').value = preset ? preset[1] : '';
   $('tz').value = c.timezone;
   $('tzCustomRow').hidden = !!preset;
-  $('relayBoot').value = c.relay_boot;
-  c.relay_names.forEach((n, i) => $('rn'+i).value = n);
+  for (let i = 0; i < RELAYS; i++) fillRelayFields(i);
   $('mqEnabled').checked = c.mqtt.enabled;
   $('mqHost').value = c.mqtt.host;
   $('mqPort').value = c.mqtt.port;

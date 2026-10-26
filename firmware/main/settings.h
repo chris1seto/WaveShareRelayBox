@@ -8,6 +8,7 @@
 
 #define SETTINGS_HOSTNAME_LEN   33   // 32 chars + NUL
 #define SETTINGS_NAME_LEN       25
+#define SETTINGS_ID_LEN         25   // relay id: [a-z0-9_-], 1..24 chars
 #define SETTINGS_SSID_LEN       33
 #define SETTINGS_WIFI_PASS_LEN  65
 
@@ -32,8 +33,9 @@ typedef struct {
     char ntp_server[64];
     char timezone[64];
     char admin_password[64];   // empty = web UI/API is open
-    relay_boot_mode_t relay_boot;
-    char relay_names[RELAY_COUNT][SETTINGS_NAME_LEN];
+    relay_boot_mode_t relay_boot[RELAY_COUNT];          // what each relay does after power loss
+    char relay_names[RELAY_COUNT][SETTINGS_NAME_LEN];   // free-text display name
+    char relay_ids[RELAY_COUNT][SETTINGS_ID_LEN];       // derived from the name, read-only
     mqtt_settings_t mqtt;
 } device_settings_t;
 
@@ -59,6 +61,13 @@ esp_err_t settings_factory_reset(void);
 
 /** true if the hostname is a valid DNS label (a-z, 0-9, '-', 1..32 chars). */
 bool settings_hostname_valid(const char *hostname);
+
+/**
+ * Derive a relay id from its display name: letters (lowercased), digits, '_' and '-' are kept,
+ * runs of whitespace become one '_', everything else is dropped, max 24 chars.
+ * The web UI mirrors this exactly to preview the id while typing.
+ */
+void settings_relay_id_from_name(const char *name, char out[SETTINGS_ID_LEN]);
 
 /** Returns a short id derived from the MAC, e.g. "a1b2c3". */
 const char *settings_device_id(void);
