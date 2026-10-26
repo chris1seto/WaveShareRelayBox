@@ -1,4 +1,5 @@
-// Waveshare ESP32-S3-Relay-6CH firmware: web UI, REST API, MQTT, mDNS, NTP and OTA.
+// Waveshare ESP32-S3-Relay-6CH firmware: web UI, REST + WebSocket API, MQTT, Modbus RTU,
+// schedules, interlocks, mDNS, NTP and OTA.
 
 #include "driver/gpio.h"
 #include "esp_app_desc.h"
@@ -11,7 +12,10 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
+#include "board_io.h"
+#include "modbus.h"
 #include "mqtt_link.h"
+#include "scheduler.h"
 #include "net_services.h"
 #include "ota.h"
 #include "relays.h"
@@ -59,12 +63,19 @@ static void button_task(void *arg)
             held_ms += 100;
             if (held_ms == 1000) {
                 ESP_LOGW(TAG, "Keep holding the button for a factory reset...");
+                board_io_reset_pending(true);
+                board_io_beep(80, 2000);
             }
             if (held_ms >= FACTORY_RESET_HOLD_MS) {
+                board_io_beep(600, 1500);
                 settings_factory_reset();
+                vTaskDelay(pdMS_TO_TICKS(700));
                 esp_restart();
             }
         } else {
+            if (held_ms >= 1000) {
+                board_io_reset_pending(false);   // released early: cancelled
+            }
             held_ms = 0;
         }
     }
@@ -83,7 +94,7 @@ void app_main(void)
     settings_get(&cfg);
 
     // Relays first so outputs settle as early as possible after reset.
-    ESP_ERROR_CHECK(relays_init(cfg.relay_boot));
+    ESP_ERROR_CHECK(relays_init(cfg.relay_boot, cfg.relay_group));
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -91,6 +102,9 @@ void app_main(void)
     ESP_ERROR_CHECK(net_services_start(cfg.hostname, cfg.ntp_server, cfg.timezone));
     ESP_ERROR_CHECK(web_server_start());
     ESP_ERROR_CHECK(mqtt_link_start());
+    ESP_ERROR_CHECK(scheduler_start());
+    ESP_ERROR_CHECK(modbus_start());
+    ESP_ERROR_CHECK(board_io_start());
 
 #if CONFIG_APP_FACTORY_RESET_GPIO >= 0
     xTaskCreate(button_task, "button", 3072, NULL, 2, NULL);

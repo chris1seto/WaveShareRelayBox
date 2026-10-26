@@ -6,7 +6,9 @@
 #include "cJSON.h"
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
+#include "esp_event.h"
 #include "esp_log.h"
+#include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -21,6 +23,7 @@ typedef enum {
     CMD_RELOAD,
     CMD_CONNECTED,       // publish everything after (re)connecting
     CMD_PUBLISH_STATE,
+    CMD_NET_UP,          // Wi-Fi got an IP address
 } cmd_t;
 
 // The worker task owns the client: only it creates, destroys or publishes,
@@ -341,9 +344,28 @@ static void clear_renamed_ids(void)
     }
 }
 
+/** Start the client once Wi-Fi is up; until then just report "connecting". */
+static void try_start(void)
+{
+    wifi_mgr_status_t ws;
+    wifi_mgr_get_status(&ws);
+    if (ws.sta_connected) {
+        client_start();
+        return;
+    }
+    device_settings_t ds;
+    settings_get(&ds);
+    s_state = (ds.mqtt.enabled && ds.mqtt.host[0]) ? MQTT_LINK_CONNECTING : MQTT_LINK_DISABLED;
+}
+
+static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    post(CMD_NET_UP);
+}
+
 static void worker(void *arg)
 {
-    client_start();
+    try_start();
     cmd_t cmd;
     for (;;) {
         if (xQueueReceive(s_queue, &cmd, portMAX_DELAY) != pdTRUE) {
@@ -353,7 +375,14 @@ static void worker(void *arg)
         case CMD_RELOAD:
             clear_renamed_ids();
             client_stop();
-            client_start();
+            try_start();
+            break;
+        case CMD_NET_UP:
+            // esp-mqtt reconnects by itself after later drops; this only covers the
+            // first connection (and one after a reload while Wi-Fi was down).
+            if (!s_client) {
+                client_start();
+            }
             break;
         case CMD_CONNECTED:
             if (s_client) {
@@ -380,7 +409,8 @@ esp_err_t mqtt_link_start(void)
     if (!s_queue) {
         return ESP_ERR_NO_MEM;
     }
-    relays_set_listener(on_relays_changed);
+    relays_add_listener(on_relays_changed);
+    esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_got_ip, NULL);
     return xTaskCreate(worker, "mqtt_link", 4096, NULL, 4, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 

@@ -62,7 +62,7 @@ dialog .actions{justify-content:flex-end}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media (max-width:600px){.grid{grid-template-columns:1fr}}
 label{display:block;font-size:13px;color:var(--muted);margin-bottom:4px}
-input[type=text],input[type=password],input[type=number],select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--input);color:var(--text);font:inherit}
+input[type=text],input[type=password],input[type=number],input[type=time],select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--input);color:var(--text);font:inherit}
 input:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:transparent}
 .check{display:flex;gap:8px;align-items:center;color:var(--text);font-size:15px;margin:0;cursor:pointer}
 .check input{width:18px;height:18px}
@@ -84,6 +84,20 @@ code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--bg);paddin
 progress{width:100%;height:10px;margin-top:10px}
 body.busy{cursor:progress}
 body.busy main,body.busy nav{opacity:.55;pointer-events:none;transition:opacity .15s}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chip{margin:0;cursor:pointer}
+.chip input{position:absolute;opacity:0;width:0;height:0}
+.chip span{display:inline-block;padding:4px 10px;border:1px solid var(--line);border-radius:99px;font-size:13px;color:var(--muted);user-select:none}
+.chip input:checked+span{background:var(--accent);border-color:var(--accent);color:var(--accent-text)}
+.chip input:focus-visible+span{outline:2px solid var(--accent);outline-offset:2px}
+.sched-top{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.sched-top input[type=time]{width:auto}
+.sched-top select{width:auto}
+.sched-top .menu-btn{margin-left:auto}
+.sched.off{opacity:.6}
+.grp{font-size:12px;padding:1px 7px;border-radius:99px;background:var(--bg);border:1px solid var(--line)}
+.dirty{color:var(--warn)}
+input[type=range]{width:100%}
 #toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:10px 16px;border-radius:8px;max-width:calc(100% - 32px);opacity:0;pointer-events:none;transition:opacity .2s;z-index:10}
 #toast.show{opacity:1}
 #toast.err{background:var(--bad);color:#fff}
@@ -97,10 +111,12 @@ body.busy main,body.busy nav{opacity:.55;pointer-events:none;transition:opacity 
       <span class="pill" id="pWifi">Wi-Fi</span>
       <span class="pill" id="pMqtt">MQTT</span>
       <span class="pill" id="pTime">Time</span>
+      <span class="pill" id="pLive" title="Live updates over WebSocket">Live</span>
     </div>
   </div>
   <nav>
     <button data-tab="relays" class="active">Relays</button>
+    <button data-tab="schedules">Schedules</button>
     <button data-tab="network">Network</button>
     <button data-tab="mqtt">MQTT</button>
     <button data-tab="system">System</button>
@@ -115,6 +131,17 @@ body.busy main,body.busy nav{opacity:.55;pointer-events:none;transition:opacity 
     <button class="btn" onclick="setAll(false)">All off</button>
   </div>
   <div id="relayList"></div>
+</section>
+
+<!-- Schedules -->
+<section id="tab-schedules">
+  <p class="hint" id="schedNote" style="margin:0 0 12px"></p>
+  <div id="schedList"></div>
+  <div class="actions" style="margin:0 0 16px">
+    <button class="btn" onclick="addSchedule()" id="schedAdd">Add schedule</button>
+    <button class="btn primary" onclick="saveSchedules(this)">Save schedules</button>
+    <button class="btn" onclick="revertSchedules()" id="schedRevert" hidden>Discard changes</button>
+  </div>
 </section>
 
 <!-- Network -->
@@ -193,6 +220,26 @@ body.busy main,body.busy nav{opacity:.55;pointer-events:none;transition:opacity 
     <table class="kv" id="sysInfo"></table>
   </div>
   <div class="card">
+    <h2>Board</h2>
+    <div class="grid">
+      <div><label class="check"><input type="checkbox" id="hwLed"> Status LED</label>
+        <p class="hint">Green: all good · amber: MQTT not connected · blinking blue: setup access point · blinking red: no network. Flashes white when a relay switches.</p></div>
+      <div><label for="hwBri">LED brightness: <span id="hwBriVal"></span>%</label><input type="range" id="hwBri" min="1" max="100"
+        oninput="$('hwBriVal').textContent = this.value"></div>
+      <div><label class="check"><input type="checkbox" id="hwBuzz"> Beep when a relay switches</label></div>
+    </div>
+    <h2 style="margin-top:20px">Modbus RTU (RS485)</h2>
+    <label class="check"><input type="checkbox" id="mbEn"> Enable Modbus RTU slave</label>
+    <div class="grid" style="margin-top:12px">
+      <div><label for="mbAddr">Slave address (1-247)</label><input type="number" id="mbAddr" min="1" max="247"></div>
+      <div><label for="mbBaud">Baud rate (8N1)</label><select id="mbBaud">
+        <option>1200</option><option>2400</option><option>4800</option><option>9600</option><option>19200</option>
+        <option>38400</option><option>57600</option><option>115200</option></select></div>
+    </div>
+    <table class="kv" id="mbInfo" style="margin-top:12px"></table>
+    <div class="actions"><button class="btn primary" onclick="saveBoard(this)">Save</button></div>
+  </div>
+  <div class="card">
     <h2>Firmware update</h2>
     <p class="hint" style="margin-top:0">Upload <code>build/waveshare-relay-firmware.bin</code>. If the new firmware fails to start, the device rolls back to the current one automatically.</p>
     <div class="row" style="margin-top:12px">
@@ -228,6 +275,12 @@ body.busy main,body.busy nav{opacity:.55;pointer-events:none;transition:opacity 
   <p class="hint" id="dlgSub" style="margin:2px 0 16px"></p>
   <label for="dlgBoot">After power loss</label>
   <select id="dlgBoot"></select>
+  <label for="dlgGroup" style="margin-top:14px">Interlock group</label>
+  <select id="dlgGroup">
+    <option value="0">None</option><option value="1">Group A</option><option value="2">Group B</option>
+    <option value="3">Group C</option><option value="4">Group D</option>
+  </select>
+  <p class="hint">Relays in the same group are never on together. Switching one on turns the others off first, with a short pause, e.g. for motor up/down.</p>
   <div class="actions">
     <button type="button" class="btn" id="dlgCancel">Cancel</button>
     <button type="button" class="btn primary" id="dlgSave">Save</button>
@@ -351,7 +404,7 @@ function buildRelays(){
         <div class="relay-title">
           <button type="button" class="name" title="Click to rename"><span></span></button>
           <input id="rn${i}" class="name-edit" type="text" maxlength="24" autocomplete="off" hidden>
-          <div class="meta"><span>Channel ${i+1}</span><code class="rid"></code></div>
+          <div class="meta"><span>Channel ${i+1}</span><code class="rid"></code><span class="grp" hidden></span></div>
           <div class="relay-err" hidden></div>
         </div>
         <button type="button" class="menu-btn" title="Options">${MENU_ICON}</button>
@@ -383,15 +436,18 @@ function openOptions(i){
   $('dlgTitle').textContent = config.relay_names[i];
   $('dlgSub').textContent = `Channel ${i+1} · ${config.relay_ids[i]}`;
   $('dlgBoot').value = config.relay_boot[i];
+  $('dlgGroup').value = config.relay_groups[i];
   $('relayDlg').showModal();
 }
 async function saveOptions(){
-  const i = dlgRelay, btns = [$('dlgSave'), $('dlgCancel'), $('dlgBoot')];
+  const i = dlgRelay, btns = [$('dlgSave'), $('dlgCancel'), $('dlgBoot'), $('dlgGroup')];
   btns.forEach(b => b.disabled = true);
   $('dlgSave').textContent = 'Saving…';
   try {
     const boot = [...config.relay_boot]; boot[i] = $('dlgBoot').value;
-    config = await api('/api/config', {json: {relay_boot: boot}});
+    const groups = [...config.relay_groups]; groups[i] = +$('dlgGroup').value;
+    config = await api('/api/config', {json: {relay_boot: boot, relay_groups: groups}});
+    await refresh();
     $('relayDlg').close();
     toast(`${config.relay_names[i]}: options saved`);
   } catch(e){ toast(e.message, true); }
@@ -452,6 +508,9 @@ function renderRelays(){
     const card = $('relay' + i);
     card.querySelector('.name span').textContent = r.name;
     if (!editing.has(i)) card.querySelector('.rid').textContent = r.id;
+    const grp = card.querySelector('.grp');
+    grp.hidden = !r.group;
+    grp.textContent = r.group ? 'Interlock ' + 'ABCD'[r.group - 1] : '';
     const cb = card.querySelector('.toggle');
     if (!busy.has(i)) cb.checked = r.on;
   });
@@ -615,6 +674,137 @@ function savePassword(btn, clear){
   });
 }
 
+// ---------- schedules
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+let schedules = [], schedSaved = [], schedDirty = false, schedMax = 24;
+function setSchedDirty(d){
+  schedDirty = d;
+  $('schedRevert').hidden = !d;
+  renderSchedNote();
+}
+function renderSchedNote(){
+  const n = $('schedNote');
+  const parts = [];
+  if (status) parts.push(status.time.synced
+    ? `Times are local (${(TZ.find(t => t[1] === status.time.timezone) || [status.time.timezone])[0]}); the device clock reads ${status.time.local.slice(11, 16)}.`
+    : 'The clock is not set yet; schedules start running once NTP has synchronised.');
+  if (schedDirty) parts.push('<span class="dirty">Unsaved changes.</span>');
+  n.innerHTML = parts.join(' ');
+}
+function chip(label, checked, onchange){
+  const l = document.createElement('label'); l.className = 'chip';
+  const i = document.createElement('input'); i.type = 'checkbox'; i.checked = checked;
+  i.onchange = () => onchange(i.checked);
+  const sp = document.createElement('span'); sp.textContent = label;
+  l.append(i, sp); return l;
+}
+function toggleIn(arr, v, on){
+  const i = arr.indexOf(v);
+  if (on && i < 0) arr.push(v); else if (!on && i >= 0) arr.splice(i, 1);
+  arr.sort((a, b) => a - b);
+}
+function renderSchedules(){
+  const list = $('schedList');
+  list.replaceChildren();
+  if (!schedules.length){
+    const c = document.createElement('div'); c.className = 'card hint'; c.style.marginTop = 0;
+    c.textContent = 'No schedules yet. Add one to switch relays at set times.';
+    list.append(c);
+  }
+  schedules.forEach((e, k) => {
+    const card = document.createElement('div'); card.className = 'card sched' + (e.enabled ? '' : ' off');
+    card.innerHTML = `
+      <div class="sched-top">
+        <label class="switch" title="Enabled"><input type="checkbox" class="en"><span></span></label>
+        <input type="time" class="time" required>
+        <select class="action"><option value="on">Turn on</option><option value="off">Turn off</option><option value="toggle">Toggle</option></select>
+        <button type="button" class="menu-btn del" title="Delete schedule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+      <div class="chips relays"></div>
+      <div class="chips days"></div>`;
+    const changed = () => setSchedDirty(true);
+    const en = card.querySelector('.en');
+    en.checked = e.enabled; en.setAttribute('aria-label', `Schedule ${k+1} enabled`);
+    en.onchange = () => { e.enabled = en.checked; card.classList.toggle('off', !e.enabled); changed(); };
+    const t = card.querySelector('.time'); t.value = e.time;
+    t.onchange = () => { e.time = t.value; changed(); };
+    const a = card.querySelector('.action'); a.value = e.action;
+    a.onchange = () => { e.action = a.value; changed(); };
+    card.querySelector('.del').onclick = () => { schedules.splice(k, 1); changed(); renderSchedules(); };
+    const rel = card.querySelector('.relays');
+    for (let i = 0; i < RELAYS; i++)
+      rel.append(chip(config ? config.relay_names[i] : `Relay ${i+1}`, e.relays.includes(i), on => { toggleIn(e.relays, i, on); changed(); }));
+    const days = card.querySelector('.days');
+    DAYS.forEach((d, i) => days.append(chip(d, e.days.includes(i), on => { toggleIn(e.days, i, on); changed(); })));
+    list.append(card);
+  });
+  $('schedAdd').disabled = schedules.length >= schedMax;
+  renderSchedNote();
+}
+function addSchedule(){
+  schedules.push({enabled: true, relays: [0], action: 'on', time: '18:00', days: [0, 1, 2, 3, 4, 5, 6]});
+  setSchedDirty(true); renderSchedules();
+}
+function revertSchedules(){
+  schedules = structuredClone(schedSaved); setSchedDirty(false); renderSchedules();
+}
+function loadSchedules(data){
+  schedMax = data.max || 24;
+  schedSaved = data.schedules;
+  if (!schedDirty){ schedules = structuredClone(schedSaved); renderSchedules(); }
+}
+function saveSchedules(btn){
+  withBusy(btn, async () => {
+    schedules.forEach((e, k) => {
+      if (!e.time) throw new Error(`Schedule ${k+1}: set a time`);
+      if (!e.relays.length) throw new Error(`Schedule ${k+1}: pick at least one relay`);
+      if (!e.days.length) throw new Error(`Schedule ${k+1}: pick at least one day`);
+    });
+    const r = await api('/api/schedules', {json: {schedules}});
+    setSchedDirty(false); loadSchedules(r);
+    toast('Schedules saved');
+  });
+}
+
+// ---------- board
+function saveBoard(btn){
+  withBusy(btn, async () => {
+    const addr = +$('mbAddr').value;
+    if (!(addr >= 1 && addr <= 247)) throw new Error('Modbus address must be 1-247');
+    config = await api('/api/config', {json: {hardware: {
+      status_led: $('hwLed').checked, led_brightness: +$('hwBri').value, buzzer: $('hwBuzz').checked,
+      modbus_enabled: $('mbEn').checked, modbus_address: addr, modbus_baud: +$('mbBaud').value,
+    }}});
+    fillConfig(); toast('Board settings saved');
+  });
+}
+
+// ---------- live updates (WebSocket, falls back to polling)
+let ws = null, wsDelay = 1000;
+const wsLive = () => ws && ws.readyState === WebSocket.OPEN;
+function connectWs(){
+  try { ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/ws'); }
+  catch(e){ ws = null; return setTimeout(connectWs, wsDelay); }
+  ws.onopen = () => { wsDelay = 1000; pill($('pLive'), 'ok', 'Live'); };
+  ws.onmessage = e => {
+    let m; try { m = JSON.parse(e.data); } catch(_) { return; }
+    if (m.event === 'status'){ status = m.data; renderStatus(); }
+    else if (m.event === 'config'){ config = m.data; configChanged(); }
+    else if (m.event === 'schedules') loadSchedules(m.data);
+  };
+  ws.onclose = () => {
+    ws = null; pill($('pLive'), '', 'Polling');
+    setTimeout(connectWs, wsDelay); wsDelay = Math.min(wsDelay * 2, 15000);
+  };
+}
+// Config changed elsewhere (another tab, MQTT, API). Update what's shown, but leave
+// form fields alone so nobody's typing gets overwritten.
+function configChanged(){
+  for (let i = 0; i < RELAYS; i++) fillRelayFields(i);
+  renderTopics();
+  if (!schedDirty) renderSchedules();
+}
+
 // ---------- rendering
 function fillConfig(){
   const c = config;
@@ -639,6 +829,12 @@ function fillConfig(){
     : 'No password is set: anyone on the network can use this page and the API.';
   $('pwClear').hidden = !c.admin_password_set;
   if (!$('ssid').value) $('ssid').value = c.wifi_ssid || '';
+  $('hwLed').checked = c.hardware.status_led;
+  $('hwBri').value = c.hardware.led_brightness; $('hwBriVal').textContent = c.hardware.led_brightness;
+  $('hwBuzz').checked = c.hardware.buzzer;
+  $('mbEn').checked = c.hardware.modbus_enabled;
+  $('mbAddr').value = c.hardware.modbus_address;
+  $('mbBaud').value = String(c.hardware.modbus_baud);
   renderTopics();
 }
 function renderStatus(){
@@ -673,6 +869,13 @@ function renderStatus(){
     ['Last reset', y.reset_reason],
     ['Free memory', `${(y.free_heap/1024).toFixed(0)} KB (lowest ${(y.min_free_heap/1024).toFixed(0)} KB)`],
   ]);
+  const mb = s.modbus;
+  kv($('mbInfo'), [
+    ['Coils 0-5', 'Relays 1-6 (read FC01, write FC05/FC15)'],
+    ['Holding register 0', 'All relays as a bitmask (read FC03, write FC06)'],
+    mb.enabled && ['Traffic', `${mb.frames} requests, ${mb.crc_errors} CRC errors, ${mb.exceptions} rejected`],
+  ]);
+  renderSchedNote();
 }
 
 async function refresh(){
@@ -685,8 +888,11 @@ async function init(){
   }
   buildRelays();
   try { config = await api('/api/config'); fillConfig(); } catch(e){ toast(e.message, true); }
+  try { loadSchedules(await api('/api/schedules')); } catch(e) {}
   await refresh();
-  setInterval(() => { if (!document.hidden) refresh(); }, 3000);
+  connectWs();
+  // Poll only while the WebSocket is down.
+  setInterval(() => { if (!document.hidden && !wsLive()) refresh(); }, 3000);
 }
 init();
 </script>

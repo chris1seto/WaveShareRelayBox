@@ -1,19 +1,15 @@
 #include "web_server.h"
 
-#include <ctype.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include "api.h"
 #include "cJSON.h"
-#include "esp_app_desc.h"
 #include "esp_http_server.h"
-#include "esp_idf_version.h"
 #include "esp_log.h"
-#include "esp_ota_ops.h"
-#include "esp_system.h"
 #include "esp_timer.h"
-#include "mqtt_link.h"
-#include "net_services.h"
 #include "ota.h"
 #include "relays.h"
 #include "settings.h"
@@ -26,7 +22,10 @@ extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 
 static httpd_handle_t s_server;
 
-#define MAX_JSON_BODY 2048
+#define MAX_JSON_BODY    4096
+#define MAX_WS_MESSAGE   4096
+#define MAX_CLIENTS      12
+#define STATUS_PUSH_MS   5000
 
 // ---------------------------------------------------------------------------
 // Response helpers
@@ -92,9 +91,9 @@ static cJSON *read_json(httpd_req_t *req)
     buf[got] = '\0';
     cJSON *obj = cJSON_Parse(buf);
     free(buf);
-    if (!cJSON_IsObject(obj)) {
+    if (!cJSON_IsObject(obj) && !cJSON_IsArray(obj)) {
         cJSON_Delete(obj);
-        send_error(req, "400 Bad Request", "Expected a JSON object");
+        send_error(req, "400 Bad Request", "Expected JSON");
         return NULL;
     }
     return obj;
@@ -170,285 +169,275 @@ static esp_err_t deny(httpd_req_t *req)
     return httpd_resp_sendstr(req, "Authentication required");
 }
 
-#define REQUIRE_AUTH(req) do { if (!authorized(req)) return deny(req); } while (0)
+// ---------------------------------------------------------------------------
+// Cross-site protection
+//
+// Browsers attach cookies/credentials but also say where a request came from. A page
+// on another site must not be able to switch relays through a visitor's browser, so
+// requests that change something are refused unless they come from our own page.
+// Tools like curl send neither header and are allowed.
+
+/** Copy a header into buf; returns 0 if absent, -1 if too long, else 1. */
+static int get_header(httpd_req_t *req, const char *name, char *buf, size_t len)
+{
+    size_t n = httpd_req_get_hdr_value_len(req, name);
+    if (n == 0) {
+        return 0;
+    }
+    if (n >= len || httpd_req_get_hdr_value_str(req, name, buf, len) != ESP_OK) {
+        return -1;
+    }
+    return 1;
+}
+
+static bool same_origin(httpd_req_t *req)
+{
+    char v[160], host[128];
+    int r = get_header(req, "Sec-Fetch-Site", v, sizeof(v));
+    if (r != 0) {
+        // "none" = typed URL or bookmark
+        return r > 0 && (!strcmp(v, "same-origin") || !strcmp(v, "none"));
+    }
+    r = get_header(req, "Origin", v, sizeof(v));
+    if (r == 0) {
+        return true;   // not from a browser page
+    }
+    if (r < 0 || get_header(req, "Host", host, sizeof(host)) <= 0) {
+        return false;
+    }
+    const char *o = strstr(v, "://");
+    return o && strcasecmp(o + 3, host) == 0;
+}
+
+static esp_err_t forbid(httpd_req_t *req)
+{
+    ESP_LOGW(TAG, "Blocked cross-site request to %s", req->uri);
+    return send_error(req, "403 Forbidden", "Cross-site request blocked");
+}
+
+#define REQUIRE_AUTH(req)  do { if (!authorized(req)) return deny(req); } while (0)
+#define REQUIRE_WRITE(req) do { REQUIRE_AUTH(req); if (!same_origin(req)) return forbid(req); } while (0)
 
 // ---------------------------------------------------------------------------
-// JSON builders
+// WebSocket push
+//
+// Events are built and sent from the HTTP server task (via httpd_queue_work), so
+// they never race with request handlers. Requests for the same event while one is
+// pending are merged.
 
-static const char *boot_mode_str(relay_boot_mode_t m)
+enum { EV_STATUS = 1, EV_CONFIG = 2, EV_SCHEDULES = 4 };
+static atomic_uint s_pending_events;
+static esp_timer_handle_t s_push_timer;
+
+static int ws_clients(int *fds)
 {
-    switch (m) {
-    case RELAY_BOOT_OFF: return "off";
-    case RELAY_BOOT_ON: return "on";
-    default: return "restore";
+    size_t n = MAX_CLIENTS;
+    int all[MAX_CLIENTS];
+    if (!s_server || httpd_get_client_list(s_server, &n, all) != ESP_OK) {
+        return 0;
+    }
+    int count = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (httpd_ws_get_fd_info(s_server, all[i]) == HTTPD_WS_CLIENT_WEBSOCKET) {
+            fds[count++] = all[i];
+        }
+    }
+    return count;
+}
+
+static void ws_send_text(int fd, const char *s)
+{
+    httpd_ws_frame_t f = {
+        .type = HTTPD_WS_TYPE_TEXT,
+        .payload = (uint8_t *)s,
+        .len = strlen(s),
+        .final = true,
+    };
+    httpd_ws_send_frame_async(s_server, fd, &f);
+}
+
+static char *event_json(const char *name, cJSON *data)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "event", name);
+    cJSON_AddItemToObject(o, "data", data);
+    char *s = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    return s;
+}
+
+static void push_events(int only_fd, unsigned events)
+{
+    int fds[MAX_CLIENTS];
+    int n = only_fd >= 0 ? 1 : ws_clients(fds);
+    if (only_fd >= 0) {
+        fds[0] = only_fd;
+    }
+    if (n == 0) {
+        return;
+    }
+    static const struct { unsigned bit; const char *name; cJSON *(*build)(void); } kinds[] = {
+        { EV_CONFIG, "config", api_config },
+        { EV_SCHEDULES, "schedules", api_schedules },
+        { EV_STATUS, "status", api_status },
+    };
+    for (size_t k = 0; k < sizeof(kinds) / sizeof(kinds[0]); k++) {
+        if (!(events & kinds[k].bit)) {
+            continue;
+        }
+        char *s = event_json(kinds[k].name, kinds[k].build());
+        for (int i = 0; s && i < n; i++) {
+            ws_send_text(fds[i], s);
+        }
+        free(s);
     }
 }
 
-static int parse_boot_mode(const char *v)
+static void push_work(void *arg)
 {
-    if (!v) return -1;
-    if (!strcmp(v, "off")) return RELAY_BOOT_OFF;
-    if (!strcmp(v, "on")) return RELAY_BOOT_ON;
-    if (!strcmp(v, "restore")) return RELAY_BOOT_RESTORE;
-    return -1;
+    push_events(-1, atomic_exchange(&s_pending_events, 0));
 }
 
-static const char *reset_reason_str(void)
+static void notify(unsigned events)
 {
-    switch (esp_reset_reason()) {
-    case ESP_RST_POWERON: return "power-on";
-    case ESP_RST_SW: return "software";
-    case ESP_RST_PANIC: return "crash";
-    case ESP_RST_INT_WDT:
-    case ESP_RST_TASK_WDT:
-    case ESP_RST_WDT: return "watchdog";
-    case ESP_RST_BROWNOUT: return "brownout";
-    case ESP_RST_DEEPSLEEP: return "deep-sleep";
-    case ESP_RST_EXT: return "external";
-    default: return "other";
+    if (s_server && atomic_fetch_or(&s_pending_events, events) == 0) {
+        if (httpd_queue_work(s_server, push_work, NULL) != ESP_OK) {
+            atomic_store(&s_pending_events, 0);
+        }
     }
 }
 
-static cJSON *build_status(void)
+static void on_relays_changed(uint32_t old_mask, uint32_t new_mask)
 {
-    device_settings_t ds;
-    settings_get(&ds);
-    wifi_mgr_status_t ws;
-    wifi_mgr_get_status(&ws);
-    uint32_t mask = relays_get_mask();
-
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "hostname", ds.hostname);
-
-    // "relays" keeps the v1.x shape for existing scripts.
-    cJSON *relays = cJSON_AddObjectToObject(root, "relays");
-    cJSON *list = cJSON_AddArrayToObject(root, "relay_list");
-    for (int i = 0; i < RELAY_COUNT; i++) {
-        char key[4];
-        snprintf(key, sizeof(key), "%d", i);
-        bool on = mask & (1u << i);
-        cJSON_AddBoolToObject(relays, key, on);
-        cJSON *r = cJSON_CreateObject();
-        cJSON_AddNumberToObject(r, "index", i);
-        cJSON_AddStringToObject(r, "id", ds.relay_ids[i]);
-        cJSON_AddStringToObject(r, "name", ds.relay_names[i]);
-        cJSON_AddBoolToObject(r, "on", on);
-        cJSON_AddStringToObject(r, "power_on", boot_mode_str(ds.relay_boot[i]));
-        cJSON_AddItemToArray(list, r);
-    }
-
-    cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
-    char mac[18];
-    snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
-             ws.mac[0], ws.mac[1], ws.mac[2], ws.mac[3], ws.mac[4], ws.mac[5]);
-    cJSON_AddBoolToObject(wifi, "configured", ws.has_credentials);
-    cJSON_AddBoolToObject(wifi, "connected", ws.sta_connected);
-    cJSON_AddStringToObject(wifi, "ssid", ws.sta_ssid);
-    cJSON_AddStringToObject(wifi, "ip", ws.sta_ip);
-    cJSON_AddNumberToObject(wifi, "rssi", ws.rssi);
-    cJSON_AddStringToObject(wifi, "mac", mac);
-    cJSON_AddBoolToObject(wifi, "ap_active", ws.ap_active);
-    cJSON_AddStringToObject(wifi, "ap_ssid", ws.ap_ssid);
-    cJSON_AddStringToObject(wifi, "ap_ip", ws.ap_ip);
-    cJSON_AddNumberToObject(wifi, "ap_clients", ws.ap_clients);
-
-    cJSON *mqtt = cJSON_AddObjectToObject(root, "mqtt");
-    static const char *const mqtt_states[] = { "disabled", "connecting", "connected" };
-    cJSON_AddBoolToObject(mqtt, "enabled", ds.mqtt.enabled);
-    cJSON_AddStringToObject(mqtt, "state", mqtt_states[mqtt_link_state()]);
-
-    cJSON *t = cJSON_AddObjectToObject(root, "time");
-    char now[32];
-    net_services_local_time(now, sizeof(now));
-    cJSON_AddBoolToObject(t, "synced", net_services_time_synced());
-    cJSON_AddStringToObject(t, "local", now);
-    cJSON_AddStringToObject(t, "timezone", ds.timezone);
-
-    cJSON *sys = cJSON_AddObjectToObject(root, "system");
-    const esp_app_desc_t *app = esp_app_get_description();
-    cJSON_AddStringToObject(sys, "version", app->version);
-    cJSON_AddStringToObject(sys, "idf", esp_get_idf_version());
-    char built[40];
-    snprintf(built, sizeof(built), "%s %s", app->date, app->time);
-    cJSON_AddStringToObject(sys, "built", built);
-    cJSON_AddNumberToObject(sys, "uptime_s", (double)(esp_timer_get_time() / 1000000));
-    cJSON_AddNumberToObject(sys, "free_heap", esp_get_free_heap_size());
-    cJSON_AddNumberToObject(sys, "min_free_heap", esp_get_minimum_free_heap_size());
-    cJSON_AddStringToObject(sys, "reset_reason", reset_reason_str());
-    cJSON_AddStringToObject(sys, "partition", esp_ota_get_running_partition()->label);
-    cJSON_AddBoolToObject(sys, "pending_verify", ota_pending_verify());
-    return root;
+    notify(EV_STATUS);
 }
 
-static cJSON *build_config(void)
+static void push_timer_cb(void *arg)
 {
-    device_settings_t ds;
-    settings_get(&ds);
-    wifi_mgr_status_t ws;
-    wifi_mgr_get_status(&ws);
-
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "hostname", ds.hostname);
-    cJSON_AddStringToObject(root, "ntp_server", ds.ntp_server);
-    cJSON_AddStringToObject(root, "timezone", ds.timezone);
-    cJSON_AddBoolToObject(root, "admin_password_set", ds.admin_password[0] != '\0');
-    cJSON_AddStringToObject(root, "wifi_ssid", ws.sta_ssid);
-    cJSON *names = cJSON_AddArrayToObject(root, "relay_names");
-    for (int i = 0; i < RELAY_COUNT; i++) {
-        cJSON_AddItemToArray(names, cJSON_CreateString(ds.relay_names[i]));
-    }
-    cJSON *ids = cJSON_AddArrayToObject(root, "relay_ids");
-    cJSON *boot = cJSON_AddArrayToObject(root, "relay_boot");
-    for (int i = 0; i < RELAY_COUNT; i++) {
-        cJSON_AddItemToArray(ids, cJSON_CreateString(ds.relay_ids[i]));
-        cJSON_AddItemToArray(boot, cJSON_CreateString(boot_mode_str(ds.relay_boot[i])));
-    }
-    cJSON *m = cJSON_AddObjectToObject(root, "mqtt");
-    cJSON_AddBoolToObject(m, "enabled", ds.mqtt.enabled);
-    cJSON_AddStringToObject(m, "host", ds.mqtt.host);
-    cJSON_AddNumberToObject(m, "port", ds.mqtt.port);
-    cJSON_AddStringToObject(m, "username", ds.mqtt.username);
-    cJSON_AddBoolToObject(m, "password_set", ds.mqtt.password[0] != '\0');
-    cJSON_AddStringToObject(m, "root_topic", ds.mqtt.root_topic);
-    cJSON_AddBoolToObject(m, "ha_discovery", ds.mqtt.ha_discovery);
-    return root;
-}
-
-// ---------------------------------------------------------------------------
-// Config update helpers
-
-/** Copy an optional string field. Returns false (and sets *bad) if present but invalid. */
-static bool take_str(const cJSON *obj, const char *key, char *dst, size_t len, const char **bad)
-{
-    const cJSON *it = cJSON_GetObjectItemCaseSensitive(obj, key);
-    if (!it) {
-        return true;
-    }
-    if (!cJSON_IsString(it) || strlen(it->valuestring) >= len) {
-        *bad = key;
-        return false;
-    }
-    strlcpy(dst, it->valuestring, len);
-    return true;
-}
-
-static bool take_bool(const cJSON *obj, const char *key, bool *dst, const char **bad)
-{
-    const cJSON *it = cJSON_GetObjectItemCaseSensitive(obj, key);
-    if (!it) {
-        return true;
-    }
-    if (!cJSON_IsBool(it)) {
-        *bad = key;
-        return false;
-    }
-    *dst = cJSON_IsTrue(it);
-    return true;
-}
-
-static bool parse_config(const cJSON *body, device_settings_t *s, const char **bad)
-{
-    if (!take_str(body, "hostname", s->hostname, sizeof(s->hostname), bad) ||
-        !take_str(body, "ntp_server", s->ntp_server, sizeof(s->ntp_server), bad) ||
-        !take_str(body, "timezone", s->timezone, sizeof(s->timezone), bad) ||
-        !take_str(body, "admin_password", s->admin_password, sizeof(s->admin_password), bad)) {
-        return false;
-    }
-    for (char *p = s->hostname; *p; p++) {
-        *p = (char)tolower((unsigned char)*p);
-    }
-    if (!settings_hostname_valid(s->hostname)) {
-        *bad = "hostname (use a-z, 0-9 and '-', up to 32 characters)";
-        return false;
-    }
-
-    // relay_boot: one mode per relay, or a single string applied to all of them.
-    const cJSON *boot = cJSON_GetObjectItemCaseSensitive(body, "relay_boot");
-    if (boot) {
-        bool all = cJSON_IsString(boot);
-        if (!all && (!cJSON_IsArray(boot) || cJSON_GetArraySize(boot) != RELAY_COUNT)) {
-            *bad = "relay_boot";
-            return false;
-        }
-        for (int i = 0; i < RELAY_COUNT; i++) {
-            int m = parse_boot_mode(cJSON_GetStringValue(all ? boot : cJSON_GetArrayItem(boot, i)));
-            if (m < 0) {
-                *bad = "relay_boot (use off, on or restore)";
-                return false;
-            }
-            s->relay_boot[i] = (relay_boot_mode_t)m;
-        }
-    }
-
-    // The relay id is derived from the name, so it is checked here rather than set.
-    const cJSON *names = cJSON_GetObjectItemCaseSensitive(body, "relay_names");
-    if (names) {
-        if (!cJSON_IsArray(names) || cJSON_GetArraySize(names) != RELAY_COUNT) {
-            *bad = "relay_names";
-            return false;
-        }
-        for (int i = 0; i < RELAY_COUNT; i++) {
-            const char *n = cJSON_GetStringValue(cJSON_GetArrayItem(names, i));
-            if (!n || strlen(n) >= SETTINGS_NAME_LEN) {
-                *bad = "relay name (up to 24 characters)";
-                return false;
-            }
-            strlcpy(s->relay_names[i], n, SETTINGS_NAME_LEN);
-            settings_relay_id_from_name(s->relay_names[i], s->relay_ids[i]);
-            // Ids need a letter so MQTT can't confuse them with a numeric index.
-            if (!strpbrk(s->relay_ids[i], "abcdefghijklmnopqrstuvwxyz")) {
-                *bad = "relay name (needs at least one letter)";
-                return false;
-            }
-        }
-        for (int i = 0; i < RELAY_COUNT; i++) {
-            for (int j = i + 1; j < RELAY_COUNT; j++) {
-                if (strcmp(s->relay_ids[i], s->relay_ids[j]) == 0) {
-                    // Only the HTTP server task runs this, so a static buffer is safe.
-                    static char msg[96];
-                    snprintf(msg, sizeof(msg), "relay name: relays %d and %d would both get the id \"%s\"",
-                             i + 1, j + 1, s->relay_ids[i]);
-                    *bad = msg;
-                    return false;
-                }
-            }
-        }
-    }
-
-    const cJSON *m = cJSON_GetObjectItemCaseSensitive(body, "mqtt");
-    if (m) {
-        if (!cJSON_IsObject(m) ||
-            !take_bool(m, "enabled", &s->mqtt.enabled, bad) ||
-            !take_bool(m, "ha_discovery", &s->mqtt.ha_discovery, bad) ||
-            !take_str(m, "host", s->mqtt.host, sizeof(s->mqtt.host), bad) ||
-            !take_str(m, "username", s->mqtt.username, sizeof(s->mqtt.username), bad) ||
-            !take_str(m, "password", s->mqtt.password, sizeof(s->mqtt.password), bad) ||
-            !take_str(m, "root_topic", s->mqtt.root_topic, sizeof(s->mqtt.root_topic), bad)) {
-            if (!*bad) *bad = "mqtt";
-            return false;
-        }
-        const cJSON *port = cJSON_GetObjectItemCaseSensitive(m, "port");
-        if (port) {
-            if (!cJSON_IsNumber(port) || port->valuedouble < 1 || port->valuedouble > 65535) {
-                *bad = "mqtt.port";
-                return false;
-            }
-            s->mqtt.port = (uint16_t)port->valueint;
-        }
-        if (s->mqtt.enabled && !s->mqtt.host[0]) {
-            *bad = "mqtt.host (required when MQTT is enabled)";
-            return false;
-        }
-        if (strpbrk(s->mqtt.root_topic, "#+") || !s->mqtt.root_topic[0]) {
-            *bad = "mqtt.root_topic";
-            return false;
-        }
-    }
-    return true;
+    notify(EV_STATUS);   // RSSI, uptime, time, MQTT state...
 }
 
 // ---------------------------------------------------------------------------
-// Handlers
+// WebSocket API
+//
+// Request:  {"id": 7, "cmd": "set", "data": {"0": true, "pump": "toggle"}}
+// Reply:    {"id": 7, "ok": true, "data": ...}  or  {"id": 7, "ok": false, "error": "..."}
+// Events:   {"event": "status" | "config" | "schedules", "data": ...}
+//
+// Commands: ping, status, config, schedules, set, config_set, schedules_set
+
+static void ws_reply(httpd_req_t *req, const cJSON *id, bool ok, cJSON *data, const char *error)
+{
+    cJSON *o = cJSON_CreateObject();
+    if (id) {
+        cJSON_AddItemToObject(o, "id", cJSON_Duplicate(id, true));
+    }
+    cJSON_AddBoolToObject(o, "ok", ok);
+    if (data) {
+        cJSON_AddItemToObject(o, "data", data);
+    }
+    if (error) {
+        cJSON_AddStringToObject(o, "error", error);
+    }
+    char *s = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (s) {
+        httpd_ws_frame_t f = { .type = HTTPD_WS_TYPE_TEXT, .payload = (uint8_t *)s,
+                               .len = strlen(s), .final = true };
+        httpd_ws_send_frame(req, &f);
+        free(s);
+    }
+}
+
+static void ws_command(httpd_req_t *req, const char *text)
+{
+    cJSON *msg = cJSON_Parse(text);
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(msg, "id");
+    const char *cmd = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(msg, "cmd"));
+    const cJSON *data = cJSON_GetObjectItemCaseSensitive(msg, "data");
+    char err[160] = "";
+
+    if (!cmd) {
+        ws_reply(req, id, false, NULL, "Expected {\"cmd\": ..., \"data\": ...}");
+    } else if (!strcmp(cmd, "ping")) {
+        ws_reply(req, id, true, cJSON_CreateString("pong"), NULL);
+    } else if (!strcmp(cmd, "status")) {
+        ws_reply(req, id, true, api_status(), NULL);
+    } else if (!strcmp(cmd, "config")) {
+        ws_reply(req, id, true, api_config(), NULL);
+    } else if (!strcmp(cmd, "schedules")) {
+        ws_reply(req, id, true, api_schedules(), NULL);
+    } else if (!strcmp(cmd, "set")) {
+        bool ok = api_relays_command(data, err, sizeof(err));
+        ws_reply(req, id, ok, NULL, ok ? NULL : err);   // the change itself arrives as an event
+    } else if (!strcmp(cmd, "config_set")) {
+        bool ok = api_config_update(data, err, sizeof(err));
+        ws_reply(req, id, ok, ok ? api_config() : NULL, ok ? NULL : err);
+        if (ok) notify(EV_CONFIG | EV_STATUS);
+    } else if (!strcmp(cmd, "schedules_set")) {
+        bool ok = api_schedules_update(data, err, sizeof(err));
+        ws_reply(req, id, ok, ok ? api_schedules() : NULL, ok ? NULL : err);
+        if (ok) notify(EV_SCHEDULES);
+    } else {
+        ws_reply(req, id, false, NULL, "Unknown cmd");
+    }
+    cJSON_Delete(msg);
+}
+
+static esp_err_t ws_pre_handshake(httpd_req_t *req)
+{
+    if (!same_origin(req)) {
+        forbid(req);
+        return ESP_FAIL;
+    }
+    if (!authorized(req)) {
+        deny(req);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+static void hello_work(void *arg)
+{
+    push_events((int)(intptr_t)arg, EV_CONFIG | EV_SCHEDULES | EV_STATUS);
+}
+
+static esp_err_t ws_post_handshake(httpd_req_t *req)
+{
+    // Send the full picture to the new client once the handshake is complete.
+    httpd_queue_work(req->handle, hello_work, (void *)(intptr_t)httpd_req_to_sockfd(req));
+    return ESP_OK;
+}
+
+static esp_err_t h_ws(httpd_req_t *req)
+{
+    httpd_ws_frame_t f = { .type = HTTPD_WS_TYPE_TEXT };
+    esp_err_t err = httpd_ws_recv_frame(req, &f, 0);   // learn the length
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (f.len == 0 || f.type != HTTPD_WS_TYPE_TEXT) {
+        return ESP_OK;
+    }
+    if (f.len > MAX_WS_MESSAGE) {
+        return ESP_FAIL;   // closes the connection
+    }
+    char *buf = malloc(f.len + 1);
+    if (!buf) {
+        return ESP_ERR_NO_MEM;
+    }
+    f.payload = (uint8_t *)buf;
+    err = httpd_ws_recv_frame(req, &f, f.len);
+    if (err == ESP_OK) {
+        buf[f.len] = '\0';
+        ws_command(req, buf);
+    }
+    free(buf);
+    return err;
+}
+
+// ---------------------------------------------------------------------------
+// HTTP handlers
 
 static esp_err_t h_index(httpd_req_t *req)
 {
@@ -461,68 +450,69 @@ static esp_err_t h_index(httpd_req_t *req)
 static esp_err_t h_status(httpd_req_t *req)
 {
     REQUIRE_AUTH(req);
-    return send_json(req, build_status(), NULL);
+    return send_json(req, api_status(), NULL);
 }
 
 static esp_err_t h_config_get(httpd_req_t *req)
 {
     REQUIRE_AUTH(req);
-    return send_json(req, build_config(), NULL);
+    return send_json(req, api_config(), NULL);
 }
 
 static esp_err_t h_config_post(httpd_req_t *req)
 {
-    REQUIRE_AUTH(req);
+    REQUIRE_WRITE(req);
     cJSON *body = read_json(req);
     if (!body) {
         return ESP_OK;
     }
-    device_settings_t old, s;
-    settings_get(&old);
-    s = old;
-    const char *bad = NULL;
-    bool ok = parse_config(body, &s, &bad);
+    char err[160];
+    bool ok = api_config_update(body, err, sizeof(err));
     cJSON_Delete(body);
     if (!ok) {
-        char msg[160];
-        snprintf(msg, sizeof(msg), "Invalid %s", bad ? bad : "value");
-        return send_error(req, "400 Bad Request", msg);
+        return send_error(req, "400 Bad Request", err);
     }
-    esp_err_t err = settings_save(&s);
-    if (err != ESP_OK) {
-        return send_error(req, "500 Internal Server Error", esp_err_to_name(err));
-    }
+    notify(EV_CONFIG | EV_STATUS);
+    return send_json(req, api_config(), NULL);
+}
 
-    bool host_changed = strcmp(old.hostname, s.hostname) != 0;
-    if (host_changed) {
-        ESP_LOGI(TAG, "Hostname -> %s", s.hostname);
-        wifi_mgr_set_hostname(s.hostname);
-        net_services_set_hostname(s.hostname);
+static esp_err_t h_schedules_get(httpd_req_t *req)
+{
+    REQUIRE_AUTH(req);
+    return send_json(req, api_schedules(), NULL);
+}
+
+static esp_err_t h_schedules_post(httpd_req_t *req)
+{
+    REQUIRE_WRITE(req);
+    cJSON *body = read_json(req);
+    if (!body) {
+        return ESP_OK;
     }
-    if (strcmp(old.ntp_server, s.ntp_server) || strcmp(old.timezone, s.timezone)) {
-        net_services_set_time_config(s.ntp_server, s.timezone);
+    char err[160];
+    bool ok = api_schedules_update(body, err, sizeof(err));
+    cJSON_Delete(body);
+    if (!ok) {
+        return send_error(req, "400 Bad Request", err);
     }
-    if (host_changed || memcmp(&old.mqtt, &s.mqtt, sizeof(s.mqtt)) ||
-        memcmp(old.relay_names, s.relay_names, sizeof(s.relay_names))) {
-        mqtt_link_reload();
-    }
-    return send_json(req, build_config(), NULL);
+    notify(EV_SCHEDULES);
+    return send_json(req, api_schedules(), NULL);
 }
 
 static esp_err_t h_relays(httpd_req_t *req)
 {
-    REQUIRE_AUTH(req);
+    REQUIRE_WRITE(req);
     cJSON *body = read_json(req);
     if (!body) {
         return ESP_OK;
     }
-    esp_err_t err = relays_apply_json(body);
+    char err[160];
+    bool ok = api_relays_command(body, err, sizeof(err));
     cJSON_Delete(body);
-    if (err != ESP_OK) {
-        return send_error(req, "400 Bad Request",
-                          "Expected {\"<0-5>\": true|false|\"toggle\", ...}");
+    if (!ok) {
+        return send_error(req, "400 Bad Request", err);
     }
-    return send_json(req, build_status(), NULL);
+    return send_json(req, api_status(), NULL);
 }
 
 static esp_err_t h_wifi_scan(httpd_req_t *req)
@@ -561,7 +551,7 @@ static esp_err_t h_wifi_scan(httpd_req_t *req)
 
 static esp_err_t h_wifi_post(httpd_req_t *req)
 {
-    REQUIRE_AUTH(req);
+    REQUIRE_WRITE(req);
     cJSON *body = read_json(req);
     if (!body) {
         return ESP_OK;
@@ -594,7 +584,7 @@ static esp_err_t h_wifi_post(httpd_req_t *req)
 
 static esp_err_t h_ota(httpd_req_t *req)
 {
-    REQUIRE_AUTH(req);
+    REQUIRE_WRITE(req);
     char msg[96];
     esp_err_t err = ota_from_request(req, msg, sizeof(msg));
     if (err != ESP_OK) {
@@ -609,7 +599,7 @@ static esp_err_t h_ota(httpd_req_t *req)
 
 static esp_err_t h_reboot(httpd_req_t *req)
 {
-    REQUIRE_AUTH(req);
+    REQUIRE_WRITE(req);
     send_ok(req, "Rebooting");
     ota_schedule_reboot(1000);
     return ESP_OK;
@@ -617,7 +607,7 @@ static esp_err_t h_reboot(httpd_req_t *req)
 
 static esp_err_t h_factory_reset(httpd_req_t *req)
 {
-    REQUIRE_AUTH(req);
+    REQUIRE_WRITE(req);
     send_ok(req, "Settings erased, rebooting into setup mode");
     settings_factory_reset();
     ota_schedule_reboot(1000);
@@ -636,7 +626,8 @@ esp_err_t web_server_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 8192;
-    cfg.max_uri_handlers = 16;
+    cfg.max_uri_handlers = 20;
+    cfg.max_open_sockets = MAX_CLIENTS;
     cfg.lru_purge_enable = true;
     cfg.recv_wait_timeout = 10;
     cfg.send_wait_timeout = 10;
@@ -653,12 +644,18 @@ esp_err_t web_server_start(void)
         { .uri = "/api/status",        .method = HTTP_GET,  .handler = h_status },
         { .uri = "/api/config",        .method = HTTP_GET,  .handler = h_config_get },
         { .uri = "/api/config",        .method = HTTP_POST, .handler = h_config_post },
+        { .uri = "/api/schedules",     .method = HTTP_GET,  .handler = h_schedules_get },
+        { .uri = "/api/schedules",     .method = HTTP_POST, .handler = h_schedules_post },
         { .uri = "/api/relays",        .method = HTTP_POST, .handler = h_relays },
         { .uri = "/api/wifi/scan",     .method = HTTP_GET,  .handler = h_wifi_scan },
         { .uri = "/api/wifi",          .method = HTTP_POST, .handler = h_wifi_post },
         { .uri = "/api/ota",           .method = HTTP_POST, .handler = h_ota },
         { .uri = "/api/reboot",        .method = HTTP_POST, .handler = h_reboot },
         { .uri = "/api/factory-reset", .method = HTTP_POST, .handler = h_factory_reset },
+        { .uri = "/api/ws",            .method = HTTP_GET,  .handler = h_ws,
+          .is_websocket = true,
+          .ws_pre_handshake_cb = ws_pre_handshake,
+          .ws_post_handshake_cb = ws_post_handshake },
         // v1.x compatibility
         { .uri = "/status",            .method = HTTP_GET,  .handler = h_status },
         { .uri = "/relay",             .method = HTTP_POST, .handler = h_relays },
@@ -666,6 +663,12 @@ esp_err_t web_server_start(void)
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &routes[i]));
     }
+
+    relays_add_listener(on_relays_changed);
+    const esp_timer_create_args_t ta = { .callback = push_timer_cb, .name = "ws_push" };
+    ESP_ERROR_CHECK(esp_timer_create(&ta, &s_push_timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(s_push_timer, STATUS_PUSH_MS * 1000ULL));
+
     ESP_LOGI(TAG, "Web server listening on port %d", cfg.server_port);
     return ESP_OK;
 }

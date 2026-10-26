@@ -2,14 +2,18 @@
 
 Firmware for the Waveshare ESP32-S3-Relay-6CH board, built on **ESP-IDF v6.1**.
 
-- Web UI and JSON API for the 6 relays, with per-relay names
+- Web UI, JSON API and **WebSocket API** for the 6 relays, with live updates in every open browser tab
 - Wi-Fi setup through a temporary access point; reconnects on its own after router outages
 - Configurable **hostname**, used for DHCP, **mDNS** (`http://<hostname>.local/`) and the MQTT client ID
 - **NTP** time sync with a configurable server and timezone
 - **MQTT**: JSON and per-relay topics, retained state, last-will availability, optional TLS, and **Home Assistant discovery**
 - **OTA updates** from the web UI or `curl`, with automatic rollback if the new image doesn't come up
 - Per-relay display name (with an ID generated from it) and power-on behaviour: restore last state, off or on
-- Optional admin password (HTTP Basic auth)
+- **Schedules**: switch relays on, off or toggle at set times on chosen weekdays (local time via NTP)
+- **Interlocks**: relays in the same group are never on together, with a dead time between them (e.g. motor up/down)
+- **Modbus RTU** slave on the RS485 port
+- Status **RGB LED** and optional **buzzer** feedback
+- Optional admin password (HTTP Basic auth); requests from other websites are refused
 - Factory reset from the web UI, or by holding **BOOT** for 5 seconds
 - Crash dumps saved to flash (`idf.py coredump-info`)
 
@@ -29,7 +33,7 @@ Board options (relay GPIOs, polarity, default hostname, setup AP name and passwo
 
 ## Flashing
 
-The first flash has to go over USB, because the partition table changed from v1.x:
+The first flash has to go over USB, because the partition table changed (from v1.x, and again when the layout moved to the board's full 16 MB):
 
 ```bash
 idf.py -p /dev/ttyACM0 flash monitor
@@ -58,19 +62,24 @@ If the device loses Wi-Fi for 30 seconds, the setup access point comes back whil
 
 | Method | Path | Body / notes |
 |---|---|---|
-| GET | `/api/status` | relays, Wi-Fi, MQTT, time, system |
+| GET | `/api/status` | relays, Wi-Fi, MQTT, Modbus, time, system |
 | GET | `/api/config` | settings (passwords are not returned) |
 | POST | `/api/config` | any subset of the config fields, applied immediately |
-| POST | `/api/relays` | `{"0": true, "3": "toggle"}` |
+| GET | `/api/schedules` | schedules |
+| POST | `/api/schedules` | replace all schedules (see below) |
+| POST | `/api/relays` | `{"0": true, "garage_door": "toggle"}` (index or ID) |
+| GET | `/api/ws` | WebSocket API (see below) |
 | GET | `/api/wifi/scan` | nearby networks |
 | POST | `/api/wifi` | `{"ssid": "...", "password": "..."}` |
 | POST | `/api/ota` | raw `.bin` as the request body |
 | POST | `/api/reboot` | |
 | POST | `/api/factory-reset` | erases all settings |
 
-Per-relay settings in `/api/config`: `relay_names` (6 display names) and `relay_boot` (6 × `off` / `on` / `restore`, or one string for all). Each relay's read-only `relay_ids` entry is generated from its name: it's lowercase; letters, digits, `_` and `-` are kept, spaces become `_`, everything else is dropped. Two relays can't end up with the same ID.
+Per-relay settings in `/api/config`: `relay_names` (6 display names), `relay_boot` (6 × `off` / `on` / `restore`, or one string for all) and `relay_groups` (6 × interlock group: 0 = none, 1-4 = A-D). Board settings live under `hardware`: `status_led`, `led_brightness` (1-100), `buzzer`, `modbus_enabled`, `modbus_address` (1-247), `modbus_baud`. Each relay's read-only `relay_ids` entry is generated from its name: it's lowercase; letters, digits, `_` and `-` are kept, spaces become `_`, everything else is dropped. Two relays can't end up with the same ID.
 
 `GET /status` and `POST /relay` from v1.x still work.
+
+**Cross-site protection:** requests that change something are refused (403) when a browser reports they come from another website, judged by the `Origin` and `Sec-Fetch-Site` headers. Scripts and tools like curl don't send those headers and work as before.
 
 Example:
 
@@ -97,21 +106,76 @@ The broker field takes a plain host (with the port field), or a full URI such as
 
 `examples/mqtt_test.py` is a small interactive test client.
 
+## Schedules
+
+Up to 24 entries, each switching one or more relays at a local time on chosen weekdays:
+
+```json
+{"schedules": [
+  {"enabled": true, "relays": [0, "porch_light"], "action": "on",  "time": "18:00", "days": [0,1,2,3,4,5,6]},
+  {"enabled": true, "relays": ["porch_light"],    "action": "off", "time": "23:30", "days": [0,1,2,3,4,5,6]}
+]}
+```
+
+`action` is `on`, `off` or `toggle`, and `days` uses 0 = Sunday. Nothing runs until NTP has set the clock. A minute missed while the device was off, or skipped by a clock jump, isn't caught up.
+
+## Interlocks
+
+Put relays in the same group (A-D, in a relay's options window or via `relay_groups`) and at most one of them is ever on. Turning one on switches the others off first, then waits `CONFIG_RELAY_INTERLOCK_DEADTIME_MS` (100 ms by default) before energising the new one. If a command asks for several relays of one group (e.g. "All on"), the lowest-numbered one wins. This applies to every source: web UI, API, MQTT, Modbus, schedules and the power-on state.
+
+## WebSocket API
+
+Connect to `ws://<host>/api/ws`. Basic auth is required if a password is set, and connections from other websites are refused. On connect the device sends `config`, `schedules` and `status` events. After that it pushes `status` whenever a relay changes and every 5 s, and `config`/`schedules` whenever they change.
+
+```jsonc
+// events from the device
+{"event": "status", "data": { ...same as GET /api/status... }}
+
+// requests: "id" is optional and echoed back
+{"id": 1, "cmd": "set", "data": {"0": true, "porch_light": "toggle"}}
+{"id": 2, "cmd": "config_set", "data": {"relay_boot": "off"}}
+// replies
+{"id": 1, "ok": true}
+{"id": 2, "ok": false, "error": "Invalid relay_boot (use off, on or restore)"}
+```
+
+Commands: `ping`, `status`, `config`, `schedules`, `set`, `config_set`, `schedules_set`. The data for the `*_set` commands is the same JSON as the matching POST endpoint.
+
+## Modbus RTU (RS485)
+
+Enable it under **System → Board**. It runs 8N1, at the address and baud rate set there.
+
+| Object | Address | Function codes |
+|---|---|---|
+| Coils (relays 1-6) | 0-5 | 01 read, 05 write single, 15 write multiple |
+| Holding register (all relays as a bitmask) | 0 | 03 read, 06 write |
+
+Address 0 is broadcast: writes are applied and no reply is sent. Interlocks apply to Modbus writes too. The board's RS485 transceiver switches direction by itself; a 120 Ω termination resistor can be enabled with the jumper on the board.
+
+## Board peripherals
+
+- **Status LED** (WS2812, GPIO38): green = all good, amber = MQTT not connected, blinking blue = setup access point, blinking red = no network, white flash = a relay switched, fast red = factory reset countdown.
+- **Buzzer** (passive, GPIO21): optional chirp when a relay switches; beeps during the BOOT-button factory reset.
+
 ## Layout
 
 ```
 main/
   app_main.c      boot sequence, OTA confirmation, reset button
   settings.c      NVS-backed settings and v1.x migration
-  relays.c        GPIO control, power-on state
+  relays.c        GPIO control, power-on state, interlocks
   wifi_mgr.c      station + setup AP, reconnect with backoff, scanning
   net_services.c  mDNS, SNTP, timezone
   mqtt_link.c     MQTT client, topics, Home Assistant discovery
   ota.c           OTA upload, image checks, rollback confirmation
-  web_server.c    HTTP server, JSON API, auth
+  api.c           JSON status/config/schedules shared by HTTP and WebSocket
+  web_server.c    HTTP server, WebSocket API and push, auth, cross-site checks
+  scheduler.c     runs schedules on local time
+  modbus.c        Modbus RTU slave on RS485
+  board_io.c      status LED and buzzer
   Kconfig.projbuild
 web/index.html    web UI (embedded in the firmware image)
-partitions.csv    nvs, otadata, 2 × 1.875 MB app slots, coredump (4 MB flash)
+partitions.csv    nvs, otadata, 2 × 7.9 MB app slots, coredump (16 MB flash)
 ```
 
 ## Relay polarity

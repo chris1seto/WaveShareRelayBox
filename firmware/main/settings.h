@@ -18,6 +18,33 @@ typedef enum {
     RELAY_BOOT_RESTORE = 2,
 } relay_boot_mode_t;
 
+#define RELAY_GROUPS   4    // interlock groups A-D; 0 = not interlocked
+#define SCHEDULE_MAX   24
+
+typedef struct {
+    bool status_led;          // RGB LED shows connection state
+    uint8_t led_brightness;   // 1..100 %
+    bool buzzer;              // short beep whenever a relay changes
+    bool modbus_enabled;      // Modbus RTU slave on the RS485 port
+    uint8_t modbus_address;   // 1..247
+    uint32_t modbus_baud;     // 1200..115200, 8N1
+} hw_settings_t;
+
+typedef enum {
+    SCHED_OFF = 0,
+    SCHED_ON = 1,
+    SCHED_TOGGLE = 2,
+} sched_action_t;
+
+typedef struct {
+    bool enabled;
+    uint8_t relays;    // bitmask of relays this entry switches
+    uint8_t action;    // sched_action_t
+    uint8_t days;      // bit 0 = Sunday ... bit 6 = Saturday
+    uint8_t hour;      // local time
+    uint8_t minute;
+} schedule_t;
+
 typedef struct {
     bool enabled;
     char host[96];          // hostname/IP, or a full mqtt:// / mqtts:// URI
@@ -36,6 +63,8 @@ typedef struct {
     relay_boot_mode_t relay_boot[RELAY_COUNT];          // what each relay does after power loss
     char relay_names[RELAY_COUNT][SETTINGS_NAME_LEN];   // free-text display name
     char relay_ids[RELAY_COUNT][SETTINGS_ID_LEN];       // derived from the name, read-only
+    uint8_t relay_group[RELAY_COUNT];                   // 0 = none, 1..RELAY_GROUPS = interlock group
+    hw_settings_t hw;
     mqtt_settings_t mqtt;
 } device_settings_t;
 
@@ -55,6 +84,10 @@ esp_err_t settings_set_wifi(const char *ssid, const char *pass);
 /** Last relay state bitmask, used by RELAY_BOOT_RESTORE. */
 esp_err_t settings_get_relay_mask(uint32_t *mask);
 esp_err_t settings_set_relay_mask(uint32_t mask);
+
+/** Schedules (kept separately from device_settings_t because they are larger). */
+int settings_get_schedules(schedule_t out[SCHEDULE_MAX]);
+esp_err_t settings_set_schedules(const schedule_t *in, int count);
 
 /** Erase everything this firmware stores. The caller should reboot afterwards. */
 esp_err_t settings_factory_reset(void);

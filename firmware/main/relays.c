@@ -2,6 +2,7 @@
 
 #include <inttypes.h>
 #include <stdlib.h>
+#include <string.h>
 #include <strings.h>
 #include "cJSON.h"
 #include "driver/gpio.h"
@@ -20,7 +21,9 @@ static const gpio_num_t s_gpios[RELAY_COUNT] = {
 
 static SemaphoreHandle_t s_lock;
 static uint32_t s_mask;
-static relays_listener_t s_listener;
+static uint8_t s_groups[RELAY_COUNT];
+static relays_listener_t s_listeners[6];
+static int s_listener_count;
 
 static inline int level_for(bool on)
 {
@@ -38,7 +41,50 @@ static void drive(uint32_t mask)
     }
 }
 
-esp_err_t relays_init(const relay_boot_mode_t boot_modes[RELAY_COUNT])
+/**
+ * Enforce interlocks on a requested state. In each group at most one relay may be on:
+ * prefer one that `requested_on` asks for, else keep whichever is already on, lowest
+ * index first.
+ */
+static uint32_t apply_interlocks(uint32_t want, uint32_t requested_on)
+{
+    for (int g = 1; g <= RELAY_GROUPS; g++) {
+        uint32_t members = 0;
+        for (int i = 0; i < RELAY_COUNT; i++) {
+            if (s_groups[i] == g) {
+                members |= 1u << i;
+            }
+        }
+        uint32_t on = want & members;
+        if (on & (on - 1)) {   // more than one bit set
+            uint32_t pick = (on & requested_on) ? (on & requested_on) : on;
+            uint32_t keep = pick & -pick;   // lowest set bit
+            want = (want & ~members) | keep;
+        }
+    }
+    return want;
+}
+
+/** Drive `now`, switching interlocked relays off before their partners come on. */
+static void drive_with_deadtime(uint32_t old, uint32_t now)
+{
+    uint32_t turning_off = old & ~now, turning_on = now & ~old;
+    bool swap = false;
+    for (int i = 0; i < RELAY_COUNT && !swap; i++) {
+        for (int j = 0; j < RELAY_COUNT && !swap; j++) {
+            swap = s_groups[i] && s_groups[i] == s_groups[j] &&
+                   (turning_off & (1u << i)) && (turning_on & (1u << j));
+        }
+    }
+    if (swap) {
+        drive(old & now);   // everything that's switching off goes off first
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_RELAY_INTERLOCK_DEADTIME_MS));
+    }
+    drive(now);
+}
+
+esp_err_t relays_init(const relay_boot_mode_t boot_modes[RELAY_COUNT],
+                      const uint8_t groups[RELAY_COUNT])
 {
     s_lock = xSemaphoreCreateMutex();
     if (!s_lock) {
@@ -59,7 +105,8 @@ esp_err_t relays_init(const relay_boot_mode_t boot_modes[RELAY_COUNT])
                   (boot_modes[i] == RELAY_BOOT_RESTORE && (saved & (1u << i)));
         mask |= (uint32_t)on << i;
     }
-    s_mask = mask;
+    memcpy(s_groups, groups, sizeof(s_groups));
+    s_mask = apply_interlocks(mask, 0);
     settings_set_relay_mask(s_mask);
 
     uint64_t pins = 0;
@@ -86,25 +133,24 @@ esp_err_t relays_init(const relay_boot_mode_t boot_modes[RELAY_COUNT])
 
 esp_err_t relays_set_mask(uint32_t which, uint32_t values)
 {
-    which &= ALL_MASK;
-    if (!which) {
-        return ESP_OK;
-    }
+    which &= ALL_MASK;   // which == 0 just re-applies interlocks
     xSemaphoreTake(s_lock, portMAX_DELAY);
     uint32_t old = s_mask;
-    uint32_t now = (old & ~which) | (values & which);
+    uint32_t now = apply_interlocks((old & ~which) | (values & which), which & values);
     if (now != old) {
         s_mask = now;
-        drive(now);
+        drive_with_deadtime(old, now);
         settings_set_relay_mask(now);   // skips the flash write if unchanged
     }
-    relays_listener_t cb = s_listener;
+    relays_listener_t cbs[6];
+    int n = s_listener_count;
+    memcpy(cbs, s_listeners, sizeof(cbs));
     xSemaphoreGive(s_lock);
 
     if (now != old) {
         ESP_LOGI(TAG, "State 0x%02" PRIx32 " -> 0x%02" PRIx32, old, now);
-        if (cb) {
-            cb(old, now);
+        for (int i = 0; i < n; i++) {
+            cbs[i](old, now);
         }
     }
     return ESP_OK;
@@ -139,11 +185,22 @@ bool relays_get(int idx)
     return idx >= 0 && idx < RELAY_COUNT && (relays_get_mask() & (1u << idx));
 }
 
-void relays_set_listener(relays_listener_t cb)
+void relays_add_listener(relays_listener_t cb)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_listener = cb;
+    if (s_listener_count < (int)(sizeof(s_listeners) / sizeof(s_listeners[0]))) {
+        s_listeners[s_listener_count++] = cb;
+    }
     xSemaphoreGive(s_lock);
+}
+
+void relays_set_groups(const uint8_t groups[RELAY_COUNT])
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    memcpy(s_groups, groups, sizeof(s_groups));
+    xSemaphoreGive(s_lock);
+    // A new group may already contain two relays that are on.
+    relays_set_mask(0, 0);
 }
 
 int relays_parse_payload(const char *s)

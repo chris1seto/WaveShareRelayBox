@@ -4,18 +4,24 @@
 #include "esp_err.h"
 
 /**
- * Start the HTTP server: the embedded web UI on "/" and a JSON API under /api.
- * If an admin password is set, every request needs HTTP Basic auth (any user name).
+ * Start the HTTP server: the embedded web UI on "/", a JSON API under /api and a
+ * WebSocket API on /api/ws. If an admin password is set, every request needs HTTP
+ * Basic auth (any user name). Requests that change something are refused when a
+ * browser says they come from another site (Origin / Sec-Fetch-Site headers).
  *
- *   GET  /api/status          relays, network, MQTT, time, system info
+ *   GET  /api/status          relays, network, MQTT, Modbus, time, system info
  *   GET  /api/config          settings (passwords omitted)
  *   POST /api/config          partial settings update, applied immediately
- *   POST /api/relays          {"0":true,"3":"toggle",...}
+ *   GET  /api/schedules       schedules
+ *   POST /api/schedules       replace all schedules
+ *   POST /api/relays          {"0": true, "pump": "toggle", ...}
  *   GET  /api/wifi/scan       nearby networks
- *   POST /api/wifi            {"ssid":"...","password":"..."}
+ *   POST /api/wifi            {"ssid": "...", "password": "..."}
  *   POST /api/ota             raw firmware .bin as the request body
  *   POST /api/reboot
  *   POST /api/factory-reset
+ *   GET  /api/ws              WebSocket: pushes status/config/schedules events and
+ *                             accepts commands (see web_server.c)
  *
  * GET /status and POST /relay are kept for scripts written against firmware v1.x.
  */

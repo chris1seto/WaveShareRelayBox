@@ -34,6 +34,31 @@ menu "Relay Box"
                 Used on first boot (or after a factory reset) when the power-on
                 behaviour is "restore last state" but nothing has been saved yet.
                 The default keeps the same GPIO level as firmware v1.x.
+
+        config RELAY_INTERLOCK_DEADTIME_MS
+            int "Interlock dead time (ms)"
+            range 0 2000
+            default 100
+            help
+                When switching between two relays in the same interlock group, the one
+                going off is released this long before the other one is energised.
+    endmenu
+
+    menu "Board peripherals"
+        config BOARD_LED_GPIO
+            int "WS2812 status LED GPIO (-1 to disable)"
+            range -1 48
+            default 38
+        config BOARD_BUZZER_GPIO
+            int "Passive buzzer GPIO (-1 to disable)"
+            range -1 48
+            default 21
+        config BOARD_RS485_TX_GPIO
+            int "RS485 TX GPIO"
+            default 17
+        config BOARD_RS485_RX_GPIO
+            int "RS485 RX GPIO"
+            default 18
     endmenu
 
     menu "Network"

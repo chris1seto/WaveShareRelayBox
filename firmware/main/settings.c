@@ -20,6 +20,8 @@ static const char *TAG = "settings";
 
 static SemaphoreHandle_t s_lock;
 static device_settings_t s_settings;
+static schedule_t s_schedules[SCHEDULE_MAX];
+static int s_schedule_count;
 static char s_device_id[7];
 
 // ---------------------------------------------------------------------------
@@ -96,6 +98,12 @@ static void set_defaults(device_settings_t *s)
         s->relay_boot[i] = RELAY_BOOT_RESTORE;
         snprintf(s->relay_names[i], SETTINGS_NAME_LEN, "Relay %d", i + 1);
     }
+    s->hw.status_led = true;
+    s->hw.led_brightness = 20;
+    s->hw.buzzer = false;
+    s->hw.modbus_enabled = false;
+    s->hw.modbus_address = 1;
+    s->hw.modbus_baud = 9600;
     s->mqtt.enabled = false;
     s->mqtt.port = 1883;
     s->mqtt.ha_discovery = true;
@@ -173,7 +181,20 @@ static void load_all(device_settings_t *s)
             if (nvs_get_u8(h, key, &boot) == ESP_OK && boot <= RELAY_BOOT_RESTORE) {
                 s->relay_boot[i] = (relay_boot_mode_t)boot;
             }
+            snprintf(key, sizeof(key), "rgrp%d", i);
+            uint8_t grp;
+            if (nvs_get_u8(h, key, &grp) == ESP_OK && grp <= RELAY_GROUPS) {
+                s->relay_group[i] = grp;
+            }
         }
+        uint8_t u8;
+        uint32_t u32;
+        if (nvs_get_u8(h, "led", &u8) == ESP_OK) s->hw.status_led = u8;
+        if (nvs_get_u8(h, "led_bri", &u8) == ESP_OK && u8 >= 1 && u8 <= 100) s->hw.led_brightness = u8;
+        if (nvs_get_u8(h, "buzzer", &u8) == ESP_OK) s->hw.buzzer = u8;
+        if (nvs_get_u8(h, "mb_en", &u8) == ESP_OK) s->hw.modbus_enabled = u8;
+        if (nvs_get_u8(h, "mb_addr", &u8) == ESP_OK && u8 >= 1 && u8 <= 247) s->hw.modbus_address = u8;
+        if (nvs_get_u32(h, "mb_baud", &u32) == ESP_OK && u32 >= 1200 && u32 <= 115200) s->hw.modbus_baud = u32;
         nvs_close(h);
     }
 
@@ -218,6 +239,88 @@ static void load_all(device_settings_t *s)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Schedules: stored as one blob of fixed 6-byte records after a version byte.
+
+#define SCHED_BLOB_VERSION 1
+#define SCHED_REC_SIZE     6
+
+static bool schedule_valid(const schedule_t *e)
+{
+    return e->relays && !(e->relays & ~((1u << RELAY_COUNT) - 1)) && e->action <= SCHED_TOGGLE &&
+           e->days && !(e->days & 0x80) && e->hour < 24 && e->minute < 60;
+}
+
+static void load_schedules(void)
+{
+    uint8_t blob[1 + SCHEDULE_MAX * SCHED_REC_SIZE];
+    size_t len = sizeof(blob);
+    nvs_handle_t h;
+    int n = 0;
+    if (nvs_open(NS_DEVICE, NVS_READONLY, &h) == ESP_OK) {
+        if (nvs_get_blob(h, "sched", blob, &len) == ESP_OK && len >= 1 &&
+            blob[0] == SCHED_BLOB_VERSION) {
+            for (size_t off = 1; off + SCHED_REC_SIZE <= len && n < SCHEDULE_MAX; off += SCHED_REC_SIZE) {
+                const uint8_t *r = blob + off;
+                schedule_t e = {
+                    .enabled = r[0] & 1, .action = (r[0] >> 1) & 3, .relays = r[1],
+                    .days = r[2], .hour = r[3], .minute = r[4],
+                };
+                if (schedule_valid(&e)) {
+                    s_schedules[n++] = e;
+                }
+            }
+        }
+        nvs_close(h);
+    }
+    s_schedule_count = n;
+}
+
+int settings_get_schedules(schedule_t out[SCHEDULE_MAX])
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int n = s_schedule_count;
+    memcpy(out, s_schedules, sizeof(schedule_t) * n);
+    xSemaphoreGive(s_lock);
+    return n;
+}
+
+esp_err_t settings_set_schedules(const schedule_t *in, int count)
+{
+    if (count < 0 || count > SCHEDULE_MAX) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    uint8_t blob[1 + SCHEDULE_MAX * SCHED_REC_SIZE] = { SCHED_BLOB_VERSION };
+    for (int i = 0; i < count; i++) {
+        if (!schedule_valid(&in[i])) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        uint8_t *r = blob + 1 + i * SCHED_REC_SIZE;
+        r[0] = (uint8_t)(in[i].enabled | (in[i].action << 1));
+        r[1] = in[i].relays;
+        r[2] = in[i].days;
+        r[3] = in[i].hour;
+        r[4] = in[i].minute;
+        r[5] = 0;   // reserved
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NS_DEVICE, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        err = nvs_set_blob(h, "sched", blob, 1 + count * SCHED_REC_SIZE);
+        if (err == ESP_OK) {
+            err = nvs_commit(h);
+        }
+        nvs_close(h);
+    }
+    if (err == ESP_OK) {
+        memcpy(s_schedules, in, sizeof(schedule_t) * count);
+        s_schedule_count = count;
+    }
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
 esp_err_t settings_init(void)
 {
     uint8_t mac[6] = {0};
@@ -233,7 +336,8 @@ esp_err_t settings_init(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_settings = s;
     xSemaphoreGive(s_lock);
-    ESP_LOGI(TAG, "Hostname: %s", s.hostname);
+    load_schedules();
+    ESP_LOGI(TAG, "Hostname: %s, %d schedule(s)", s.hostname, s_schedule_count);
     return ESP_OK;
 }
 
@@ -248,11 +352,14 @@ void settings_get(device_settings_t *out)
 
 esp_err_t settings_save(const device_settings_t *in)
 {
-    if (!settings_hostname_valid(in->hostname) || in->mqtt.port == 0) {
+    if (!settings_hostname_valid(in->hostname) || in->mqtt.port == 0 ||
+        in->hw.led_brightness < 1 || in->hw.led_brightness > 100 ||
+        in->hw.modbus_address < 1 || in->hw.modbus_address > 247 ||
+        in->hw.modbus_baud < 1200 || in->hw.modbus_baud > 115200) {
         return ESP_ERR_INVALID_ARG;
     }
     for (int i = 0; i < RELAY_COUNT; i++) {
-        if (in->relay_boot[i] > RELAY_BOOT_RESTORE) {
+        if (in->relay_boot[i] > RELAY_BOOT_RESTORE || in->relay_group[i] > RELAY_GROUPS) {
             return ESP_ERR_INVALID_ARG;
         }
     }
@@ -280,7 +387,15 @@ esp_err_t settings_save(const device_settings_t *in)
         CHECK(nvs_set_str(h, key, s.relay_names[i]));
         snprintf(key, sizeof(key), "rboot%d", i);
         CHECK(nvs_set_u8(h, key, (uint8_t)s.relay_boot[i]));
+        snprintf(key, sizeof(key), "rgrp%d", i);
+        CHECK(nvs_set_u8(h, key, s.relay_group[i]));
     }
+    CHECK(nvs_set_u8(h, "led", s.hw.status_led));
+    CHECK(nvs_set_u8(h, "led_bri", s.hw.led_brightness));
+    CHECK(nvs_set_u8(h, "buzzer", s.hw.buzzer));
+    CHECK(nvs_set_u8(h, "mb_en", s.hw.modbus_enabled));
+    CHECK(nvs_set_u8(h, "mb_addr", s.hw.modbus_address));
+    CHECK(nvs_set_u32(h, "mb_baud", s.hw.modbus_baud));
     CHECK(nvs_commit(h));
     nvs_close(h);
     h = 0;
