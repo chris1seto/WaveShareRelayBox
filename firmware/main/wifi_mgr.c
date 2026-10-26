@@ -18,12 +18,14 @@ static const char *TAG = "wifi";
 #define RECONNECT_MIN_MS   1000
 #define RECONNECT_MAX_MS   60000
 #define AP_LINGER_S        120     // keep the setup AP this long after STA connects
+#define REHOST_DELAY_MS    2000    // lets the HTTP reply go out before we drop the link
 
 static esp_netif_t *s_sta;
 static esp_netif_t *s_ap;
 static SemaphoreHandle_t s_lock;     // protects the fields below
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_ap_timer;
+static esp_timer_handle_t s_rehost_timer;
 
 static bool s_has_creds;
 static bool s_connected;
@@ -126,6 +128,19 @@ static void schedule_reconnect(void)
     esp_timer_stop(s_reconnect_timer);
     esp_timer_start_once(s_reconnect_timer, (uint64_t)delay * 1000ULL);
     ESP_LOGI(TAG, "Reconnecting in %" PRIu32 " ms", delay);
+}
+
+// Reconnect so the router learns a new hostname via DHCP.
+static void rehost_timer_cb(void *arg)
+{
+    LOCK();
+    bool connected = s_connected;
+    s_backoff_ms = RECONNECT_MIN_MS;
+    UNLOCK();
+    if (connected) {
+        ESP_LOGI(TAG, "Reconnecting to register the new hostname");
+        esp_wifi_disconnect();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +254,8 @@ esp_err_t wifi_mgr_start(const char *hostname)
     const esp_timer_create_args_t at = { .callback = ap_timer_cb, .name = "wifi_ap" };
     ESP_ERROR_CHECK(esp_timer_create(&rt, &s_reconnect_timer));
     ESP_ERROR_CHECK(esp_timer_create(&at, &s_ap_timer));
+    const esp_timer_create_args_t ht = { .callback = rehost_timer_cb, .name = "wifi_host" };
+    ESP_ERROR_CHECK(esp_timer_create(&ht, &s_rehost_timer));
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -296,13 +313,10 @@ esp_err_t wifi_mgr_set_hostname(const char *hostname)
     if (err != ESP_OK) {
         return err;
     }
-    LOCK();
-    bool connected = s_connected;
-    UNLOCK();
-    if (connected) {
-        // Reconnect so the router learns the new name via DHCP.
-        esp_wifi_disconnect();
-    }
+    // Disconnecting right away would kill the HTTP request that asked for this,
+    // so the reconnect happens a moment later.
+    esp_timer_stop(s_rehost_timer);
+    esp_timer_start_once(s_rehost_timer, REHOST_DELAY_MS * 1000ULL);
     return ESP_OK;
 }
 

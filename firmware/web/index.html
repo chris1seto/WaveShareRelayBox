@@ -67,6 +67,8 @@ table.kv tr:last-child td{border:0}
 .nets div:hover{background:var(--bg)}
 code{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--bg);padding:1px 5px;border-radius:4px;word-break:break-all}
 progress{width:100%;height:10px;margin-top:10px}
+body.busy{cursor:progress}
+body.busy main,body.busy nav{opacity:.55;pointer-events:none;transition:opacity .15s}
 #toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:10px 16px;border-radius:8px;max-width:calc(100% - 32px);opacity:0;pointer-events:none;transition:opacity .2s;z-index:10}
 #toast.show{opacity:1}
 #toast.err{background:var(--bad);color:#fff}
@@ -249,17 +251,39 @@ async function api(path, opts = {}){
     opts.headers = {'Content-Type':'application/json'};
     opts.body = JSON.stringify(opts.json);
   }
-  const r = await fetch(path, opts);
+  let r;
+  try { r = await fetch(path, {...opts, signal: AbortSignal.timeout(opts.timeout || 12000)}); }
+  catch(e){ throw new Error(e.name === 'TimeoutError' ? 'The device did not respond' : 'Cannot reach the device'); }
   if (r.status === 401){ location.reload(); throw new Error('Authentication required'); }
   let data = null;
   try { data = await r.json(); } catch(e) {}
   if (!r.ok) throw new Error((data && data.error) || ('HTTP ' + r.status));
   return data;
 }
-async function withBusy(btn, fn){
-  if (btn) btn.disabled = true;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Lock the whole page until `fn` finishes, so nothing can be changed mid-save.
+async function withBusy(btn, fn, label = 'Saving…'){
+  if (document.body.classList.contains('busy')) return;
+  const ctrls = [...document.querySelectorAll('main input, main select, main button, nav button')]
+    .filter(c => !c.disabled);
+  const text = btn ? btn.textContent : '';
+  ctrls.forEach(c => c.disabled = true);
+  document.body.classList.add('busy');
+  if (btn) btn.textContent = label;
   try { await fn(); } catch(e){ toast(e.message, true); }
-  finally { if (btn) btn.disabled = false; }
+  finally {
+    ctrls.forEach(c => c.disabled = false);
+    document.body.classList.remove('busy');
+    if (btn) btn.textContent = text;
+  }
+}
+async function waitForDevice(ms){
+  const end = Date.now() + ms;
+  while (Date.now() < end){
+    try { await api('/api/status', {timeout: 2000}); return true; } catch(e) {}
+    await sleep(1500);
+  }
+  return false;
 }
 function kv(table, rows){
   table.replaceChildren(...rows.filter(Boolean).map(([k, v]) => {
@@ -337,23 +361,20 @@ function saveRelaySettings(btn){
 // ---------- network
 function scan(btn){
   withBusy(btn, async () => {
-    btn.textContent = 'Scanning…';
-    try {
-      const nets = await api('/api/wifi/scan');
-      const box = $('nets'); box.hidden = false;
-      box.replaceChildren();
-      if (!nets.length){ box.textContent = 'No networks found'; return; }
-      for (const n of nets){
-        const d = document.createElement('div');
-        const a = document.createElement('span'); a.textContent = (n.secure ? '🔒 ' : '') + n.ssid;
-        const b = document.createElement('span'); b.className = 'hint'; b.style.margin = 0;
-        b.textContent = `${n.rssi} dBm · ch ${n.channel}`;
-        d.append(a, b);
-        d.onclick = () => { $('ssid').value = n.ssid; box.hidden = true; $('wpass').focus(); };
-        box.append(d);
-      }
-    } finally { btn.textContent = 'Scan'; }
-  });
+    const nets = await api('/api/wifi/scan', {timeout: 20000});
+    const box = $('nets'); box.hidden = false;
+    box.replaceChildren();
+    if (!nets.length){ box.textContent = 'No networks found'; return; }
+    for (const n of nets){
+      const d = document.createElement('div');
+      const a = document.createElement('span'); a.textContent = (n.secure ? '🔒 ' : '') + n.ssid;
+      const b = document.createElement('span'); b.className = 'hint'; b.style.margin = 0;
+      b.textContent = `${n.rssi} dBm · ch ${n.channel}`;
+      d.append(a, b);
+      d.onclick = () => { $('ssid').value = n.ssid; box.hidden = true; $('wpass').focus(); };
+      box.append(d);
+    }
+  }, 'Scanning…');
 }
 function saveWifi(btn){
   withBusy(btn, async () => {
@@ -368,8 +389,19 @@ function saveHostname(btn){
     const hostname = $('hostname').value.trim().toLowerCase();
     if (!/^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(hostname))
       throw new Error('Use a-z, 0-9 and dashes (not at the start or end), up to 32 characters');
+    if (hostname === config.hostname){ toast('Hostname unchanged'); return; }
     config = await api('/api/config', {json: {hostname}});
-    toast(`Hostname set. Now reachable at ${hostname}.local`); fillConfig(); refresh();
+    fillConfig();
+    // The device drops Wi-Fi ~2 s after replying so the router learns the new name.
+    btn.textContent = 'Reconnecting…';
+    await sleep(4000);
+    if (!await waitForDevice(30000))
+      throw new Error(`Saved, but the device hasn't come back yet. Try http://${hostname}.local/`);
+    if (location.hostname.endsWith('.local') && location.hostname !== hostname + '.local'){
+      location.href = `${location.protocol}//${hostname}.local${location.port ? ':' + location.port : ''}/#network`;
+      return;
+    }
+    toast(`Hostname set. Now reachable at ${hostname}.local`); refresh();
   });
 }
 function tzPresetChanged(){
@@ -449,7 +481,7 @@ function waitForReboot(){
 }
 function reboot(btn){
   if (!confirm('Reboot the device?')) return;
-  withBusy(btn, async () => { await api('/api/reboot', {method:'POST'}); toast('Rebooting…'); setTimeout(waitForReboot, 3000); });
+  withBusy(btn, async () => { await api('/api/reboot', {method:'POST'}); toast('Rebooting…'); setTimeout(waitForReboot, 3000); }, 'Rebooting…');
 }
 function factoryReset(btn){
   if (!confirm('Erase all settings, including Wi-Fi? The device will restart as a setup access point.')) return;

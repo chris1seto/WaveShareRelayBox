@@ -30,7 +30,7 @@ esp_err_t wifi_mgr_start(const char *hostname);
 /** Save new credentials and reconnect. Returns immediately. */
 esp_err_t wifi_mgr_set_credentials(const char *ssid, const char *password);
 
-/** Change the DHCP hostname. Reconnects if currently connected so DHCP picks it up. */
+/** Change the DHCP hostname. If connected, reconnects ~2 s later so DHCP picks it up. */
 esp_err_t wifi_mgr_set_hostname(const char *hostname);
 
 void wifi_mgr_get_status(wifi_mgr_status_t *out);
